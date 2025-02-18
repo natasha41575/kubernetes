@@ -349,6 +349,8 @@ func (m *manager) SetPodStatus(pod *v1.Pod, status v1.PodStatus) {
 	m.podStatusesLock.Lock()
 	defer m.podStatusesLock.Unlock()
 
+	klog.InfoS("status manager SetPodStatus")
+
 	// Make sure we're caching a deep copy.
 	status = *status.DeepCopy()
 
@@ -666,6 +668,8 @@ func checkContainerStateTransition(oldStatuses, newStatuses *v1.PodStatus, podSp
 // necessary.
 // This method IS NOT THREAD SAFE and must be called from a locked function.
 func (m *manager) updateStatusInternal(pod *v1.Pod, status v1.PodStatus, forceUpdate, podIsFinished bool) {
+	klog.InfoS(fmt.Sprintf("pod generation is %d", pod.Generation))
+
 	var oldStatus v1.PodStatus
 	cachedStatus, isCached := m.podStatuses[pod.UID]
 	if isCached {
@@ -765,6 +769,10 @@ func (m *manager) updateStatusInternal(pod *v1.Pod, status v1.PodStatus, forceUp
 		podIsFinished: podIsFinished,
 	}
 
+	newStatus.status.ObservedGeneration = pod.Generation
+
+	klog.InfoS(fmt.Sprintf("setting pod status generation to %d", pod.Generation))
+
 	// Multiple status updates can be generated before we update the API server,
 	// so we track the time from the first status update until we retire it to
 	// the API.
@@ -775,6 +783,12 @@ func (m *manager) updateStatusInternal(pod *v1.Pod, status v1.PodStatus, forceUp
 	}
 
 	m.podStatuses[pod.UID] = newStatus
+
+	klog.InfoS(fmt.Sprintf("new status observedGeneration %d, %d", newStatus.status.ObservedGeneration, m.podStatuses[pod.UID].status.ObservedGeneration))
+
+	if newStatus.podName == "nginx" {
+		klog.InfoS(fmt.Sprintf("new status: %s", newStatus.status.String()))
+	}
 
 	select {
 	case m.podStatusChannel <- struct{}{}:
@@ -872,9 +886,11 @@ func (m *manager) syncBatch(all bool) int {
 			// pod can wait for the next bulk check (which performs reconciliation as well)
 			if !all {
 				if m.apiStatusVersions[uidOfStatus] >= status.version {
+					klog.InfoS("skipping pod status update for pod", "name", status.podName)
 					continue
 				}
 				updatedStatuses = append(updatedStatuses, podSync{uid, uidOfStatus, status})
+				klog.InfoS("updating pod status for pod", "name", status.podName, "status", status.status.String())
 				continue
 			}
 
@@ -904,6 +920,7 @@ func (m *manager) syncBatch(all bool) int {
 
 // syncPod syncs the given status with the API server. The caller must not hold the status lock.
 func (m *manager) syncPod(uid types.UID, status versionedPodStatus) {
+	klog.InfoS("Syncing pod", "name", status.podName, "generation", status.status.ObservedGeneration)
 	// TODO: make me easier to express from client code
 	pod, err := m.kubeClient.CoreV1().Pods(status.podNamespace).Get(context.TODO(), status.podName, metav1.GetOptions{})
 	if errors.IsNotFound(err) {
@@ -934,6 +951,7 @@ func (m *manager) syncPod(uid types.UID, status versionedPodStatus) {
 	}
 
 	mergedStatus := mergePodStatus(pod.Status, status.status, m.podDeletionSafety.PodCouldHaveRunningContainers(pod))
+	klog.InfoS("Merged pod status", "name", status.podName, "generation", mergedStatus.ObservedGeneration)
 
 	newPod, patchBytes, unchanged, err := statusutil.PatchPodStatus(context.TODO(), m.kubeClient, pod.Namespace, pod.Name, pod.UID, pod.Status, mergedStatus)
 	klog.V(3).InfoS("Patch status for pod", "pod", klog.KObj(pod), "podUID", uid, "patch", string(patchBytes))

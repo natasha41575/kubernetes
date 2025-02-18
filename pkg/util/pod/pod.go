@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 )
 
@@ -36,9 +37,12 @@ func PatchPodStatus(ctx context.Context, c clientset.Interface, namespace, name 
 	if err != nil {
 		return nil, nil, false, err
 	}
+	klog.InfoS("preparing patchbytes", "name", name, "patchBytes", string(patchBytes), "unchanged", unchanged)
 	if unchanged {
 		return nil, patchBytes, true, nil
 	}
+
+	klog.InfoS("patching pod status", "name", name, "patchBytes", patchBytes)
 
 	updatedPod, err := c.CoreV1().Pods(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{}, "status")
 	if err != nil {
@@ -67,6 +71,7 @@ func preparePatchBytesForPodStatus(namespace, name string, uid types.UID, oldPod
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to CreateTwoWayMergePatch for pod %q/%q: %v", namespace, name, err)
 	}
+
 	return patchBytes, bytes.Equal(patchBytes, []byte(fmt.Sprintf(`{"metadata":{"uid":%q}}`, uid))), nil
 }
 

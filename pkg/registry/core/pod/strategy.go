@@ -91,7 +91,7 @@ func (podStrategy) PrepareForCreate(ctx context.Context, obj runtime.Object) {
 		QOSClass: qos.GetPodQOS(pod),
 	}
 
-	podutil.DropDisabledPodFields(pod, nil)
+	pod.Generation = 1
 
 	applySchedulingGatedCondition(pod)
 	mutatePodAffinity(pod)
@@ -104,6 +104,11 @@ func (podStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object
 	oldPod := old.(*api.Pod)
 	newPod.Status = oldPod.Status
 	podutil.DropDisabledPodFields(newPod, oldPod)
+
+	// Spec updates bump the generation.
+	if newPod.Generation == 0 || !apiequality.Semantic.DeepEqual(newPod.Spec, oldPod.Spec) {
+		newPod.Generation = newPod.Generation + 1
+	}
 }
 
 // Validate validates a new pod.

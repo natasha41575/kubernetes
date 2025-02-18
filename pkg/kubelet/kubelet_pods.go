@@ -1854,6 +1854,10 @@ func (kl *Kubelet) generateAPIPodStatus(pod *v1.Pod, podStatus *kubecontainer.Po
 	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
 		s.Resize = kl.determinePodResizeStatus(pod, podStatus, podIsTerminal)
 	}
+	// TODO (Natasha): Put this behind a feature gate
+	// set the observedGeneration for this pod status
+	s.ObservedGeneration = pod.GetGeneration()
+
 	// calculate the next phase and preserve reason
 	allStatus := append(append([]v1.ContainerStatus{}, s.ContainerStatuses...), s.InitContainerStatuses...)
 	s.Phase = getPhase(pod, allStatus, podIsTerminal)
