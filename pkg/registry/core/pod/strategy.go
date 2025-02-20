@@ -244,10 +244,17 @@ func (podStatusStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.
 
 type podEphemeralContainersStrategy struct {
 	podStrategy
+
+	resetFieldsFilter fieldpath.Filter
 }
 
 // EphemeralContainersStrategy wraps and exports the used podStrategy for the storage package.
-var EphemeralContainersStrategy = podEphemeralContainersStrategy{Strategy}
+var EphemeralContainersStrategy = podEphemeralContainersStrategy{
+	podStrategy: Strategy,
+	resetFieldsFilter: fieldpath.NewIncludeMatcherFilter(
+		fieldpath.MakePrefixMatcherOrDie("spec", "ephemeralContainers"),
+	),
+}
 
 // dropNonEphemeralContainerUpdates discards all changes except for pod.Spec.EphemeralContainers and certain metadata
 func dropNonEphemeralContainerUpdates(newPod, oldPod *api.Pod) *api.Pod {
@@ -281,6 +288,14 @@ func (podEphemeralContainersStrategy) WarningsOnUpdate(ctx context.Context, obj,
 	return nil
 }
 
+// GetResetFieldsFilter returns a set of fields filter reset by the strategy
+// and should not be modified by the user.
+func (p podEphemeralContainersStrategy) GetResetFieldsFilter() map[fieldpath.APIVersion]fieldpath.Filter {
+	return map[fieldpath.APIVersion]fieldpath.Filter{
+		"v1": p.resetFieldsFilter,
+	}
+}
+
 type podResizeStrategy struct {
 	podStrategy
 
@@ -293,50 +308,54 @@ var ResizeStrategy = podResizeStrategy{
 	resetFieldsFilter: fieldpath.NewIncludeMatcherFilter(
 		fieldpath.MakePrefixMatcherOrDie("spec", "containers", fieldpath.MatchAnyPathElement(), "resources"),
 		fieldpath.MakePrefixMatcherOrDie("spec", "containers", fieldpath.MatchAnyPathElement(), "resizePolicy"),
+		fieldpath.MakePrefixMatcherOrDie("spec", "initContainers", fieldpath.MatchAnyPathElement(), "resources"),
+		fieldpath.MakePrefixMatcherOrDie("spec", "initContainers", fieldpath.MatchAnyPathElement(), "resizePolicy"),
 	),
 }
 
 // dropNonResizeUpdates discards all changes except for pod.Spec.Containers[*].Resources, pod.Spec.InitContainers[*].Resources, ResizePolicy and certain metadata
 func dropNonResizeUpdates(newPod, oldPod *api.Pod) *api.Pod {
-	// Containers are not allowed to be re-ordered, but in case they were,
-	// we don't want to corrupt them here. It will get caught in validation.
-	oldPodCopyWithMergedResources := oldPod.DeepCopy()
-
-	oldCtrToIndex := make(map[string]int)
-	oldInitCtrToIndex := make(map[string]int)
-	for idx, ctr := range oldPodCopyWithMergedResources.Spec.Containers {
-		oldCtrToIndex[ctr.Name] = idx
-	}
-	for idx, ctr := range oldPodCopyWithMergedResources.Spec.InitContainers {
-		oldInitCtrToIndex[ctr.Name] = idx
+	// Containers are not allowed to be added, removed, re-ordered, or renamed.
+	// If we detect any of these changes, we will return new podspec as-is and
+	// allow the validation to catch the error and drop the update.
+	if len(newPod.Spec.Containers) != len(oldPod.Spec.Containers) || len(newPod.Spec.InitContainers) != len(oldPod.Spec.InitContainers) {
+		return newPod
 	}
 
-	for _, ctr := range newPod.Spec.Containers {
-		idx, ok := oldCtrToIndex[ctr.Name]
-		if !ok {
-			continue
-		}
-		oldPodCopyWithMergedResources.Spec.Containers[idx].Resources = ctr.Resources
-		oldPodCopyWithMergedResources.Spec.Containers[idx].ResizePolicy = ctr.ResizePolicy
-	}
-
-	if utilfeature.DefaultFeatureGate.Enabled(features.SidecarContainers) {
-		for _, ctr := range newPod.Spec.InitContainers {
-			idx, ok := oldInitCtrToIndex[ctr.Name]
-			if !ok {
-				continue
-			}
-			oldPodCopyWithMergedResources.Spec.InitContainers[idx].Resources = ctr.Resources
-			oldPodCopyWithMergedResources.Spec.InitContainers[idx].ResizePolicy = ctr.ResizePolicy
-		}
-	}
+	containers := dropNonResizeUpdatesForContainers(newPod.Spec.Containers, oldPod.Spec.Containers)
+	initContainers := dropNonResizeUpdatesForContainers(newPod.Spec.InitContainers, oldPod.Spec.InitContainers)
 
 	newPod.Spec = oldPod.Spec
 	newPod.Status = oldPod.Status
 	metav1.ResetObjectMetaForStatus(&newPod.ObjectMeta, &oldPod.ObjectMeta)
-	newPod.Spec.Containers = oldPodCopyWithMergedResources.Spec.Containers
-	newPod.Spec.InitContainers = oldPodCopyWithMergedResources.Spec.InitContainers
+
+	newPod.Spec.Containers = containers
+	if utilfeature.DefaultFeatureGate.Enabled(features.SidecarContainers) {
+		newPod.Spec.InitContainers = initContainers
+	}
+
 	return newPod
+}
+
+func dropNonResizeUpdatesForContainers(new, old []api.Container) []api.Container {
+	if len(new) == 0 {
+		return new
+	}
+
+	oldCopyWithMergedResources := make([]api.Container, len(old))
+	copy(oldCopyWithMergedResources, old)
+
+	for i, ctr := range new {
+		if oldCopyWithMergedResources[i].Name != new[i].Name {
+			// This is an attempt to reorder or rename a container, which is not allowed.
+			// Allow validation to catch this error.
+			return new
+		}
+		oldCopyWithMergedResources[i].Resources = ctr.Resources
+		oldCopyWithMergedResources[i].ResizePolicy = ctr.ResizePolicy
+	}
+
+	return oldCopyWithMergedResources
 }
 
 func (podResizeStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
