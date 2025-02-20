@@ -300,13 +300,14 @@ var ResizeStrategy = podResizeStrategy{
 func dropNonResizeUpdates(newPod, oldPod *api.Pod) *api.Pod {
 	// Containers are not allowed to be re-ordered, but in case they were,
 	// we don't want to corrupt them here. It will get caught in validation.
-	pod := oldPod.DeepCopy()
+	oldPodCopyWithMergedResources := oldPod.DeepCopy()
+
 	oldCtrToIndex := make(map[string]int)
 	oldInitCtrToIndex := make(map[string]int)
-	for idx, ctr := range pod.Spec.Containers {
+	for idx, ctr := range oldPodCopyWithMergedResources.Spec.Containers {
 		oldCtrToIndex[ctr.Name] = idx
 	}
-	for idx, ctr := range pod.Spec.InitContainers {
+	for idx, ctr := range oldPodCopyWithMergedResources.Spec.InitContainers {
 		oldInitCtrToIndex[ctr.Name] = idx
 	}
 
@@ -315,8 +316,8 @@ func dropNonResizeUpdates(newPod, oldPod *api.Pod) *api.Pod {
 		if !ok {
 			continue
 		}
-		pod.Spec.Containers[idx].Resources = ctr.Resources
-		pod.Spec.Containers[idx].ResizePolicy = ctr.ResizePolicy
+		oldPodCopyWithMergedResources.Spec.Containers[idx].Resources = ctr.Resources
+		oldPodCopyWithMergedResources.Spec.Containers[idx].ResizePolicy = ctr.ResizePolicy
 	}
 
 	if utilfeature.DefaultFeatureGate.Enabled(features.SidecarContainers) {
@@ -325,16 +326,16 @@ func dropNonResizeUpdates(newPod, oldPod *api.Pod) *api.Pod {
 			if !ok {
 				continue
 			}
-			pod.Spec.InitContainers[idx].Resources = ctr.Resources
-			pod.Spec.InitContainers[idx].ResizePolicy = ctr.ResizePolicy
+			oldPodCopyWithMergedResources.Spec.InitContainers[idx].Resources = ctr.Resources
+			oldPodCopyWithMergedResources.Spec.InitContainers[idx].ResizePolicy = ctr.ResizePolicy
 		}
 	}
 
 	newPod.Spec = oldPod.Spec
 	newPod.Status = oldPod.Status
 	metav1.ResetObjectMetaForStatus(&newPod.ObjectMeta, &oldPod.ObjectMeta)
-	newPod.Spec.Containers = pod.Spec.Containers
-	newPod.Spec.InitContainers = pod.Spec.InitContainers
+	newPod.Spec.Containers = oldPodCopyWithMergedResources.Spec.Containers
+	newPod.Spec.InitContainers = oldPodCopyWithMergedResources.Spec.InitContainers
 	return newPod
 }
 
