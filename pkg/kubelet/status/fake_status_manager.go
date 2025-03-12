@@ -24,7 +24,7 @@ import (
 )
 
 type fakeManager struct {
-	podResizeStatuses map[types.UID]v1.PodResizeStatus
+	manager
 }
 
 func (m *fakeManager) Start() {
@@ -62,17 +62,11 @@ func (m *fakeManager) RemoveOrphanedStatuses(podUIDs map[types.UID]bool) {
 	return
 }
 
-func (m *fakeManager) GetPodResizeStatus(podUID types.UID) v1.PodResizeStatus {
-	return m.podResizeStatuses[podUID]
-}
-
-func (m *fakeManager) SetPodResizeStatus(podUID types.UID, resizeStatus v1.PodResizeStatus) {
-	m.podResizeStatuses[podUID] = resizeStatus
-}
-
-// NewFakeManager creates empty/fake memory manager
+// NewFakeManager creates empty/fake memory manager.
 func NewFakeManager() Manager {
 	return &fakeManager{
-		podResizeStatuses: make(map[types.UID]v1.PodResizeStatus),
+		manager: manager{
+			podResizeConditions: make(map[types.UID]podResizeConditions),
+		},
 	}
 }
