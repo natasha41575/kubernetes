@@ -704,7 +704,7 @@ func (m *manager) updateStatusInternal(pod *v1.Pod, status v1.PodStatus, forceUp
 	// The intent here is to prevent concurrent updates to a pod's status from
 	// clobbering each other so the phase of a pod progresses monotonically.
 	if isCached && isPodStatusByKubeletEqual(&cachedStatus.status, &status) && !forceUpdate {
-		klog.V(3).InfoS("Ignoring same status for pod", "pod", klog.KObj(pod), "status", status)
+		klog.InfoS("Ignoring same status for pod", "pod", klog.KObj(pod), "status", status)
 		return
 	}
 
@@ -882,19 +882,19 @@ func (m *manager) syncPod(uid types.UID, status versionedPodStatus) {
 		return
 	}
 
-	mergedStatus := mergePodStatus(pod.Status, status.status, m.podDeletionSafety.PodCouldHaveRunningContainers(pod))
+	mergedStatus := mergePodStatus(pod.Status, pod.Status, m.podDeletionSafety.PodCouldHaveRunningContainers(pod))
 
 	newPod, patchBytes, unchanged, err := statusutil.PatchPodStatus(context.TODO(), m.kubeClient, pod.Namespace, pod.Name, pod.UID, pod.Status, mergedStatus)
-	klog.V(3).InfoS("Patch status for pod", "pod", klog.KObj(pod), "podUID", uid, "patch", string(patchBytes))
+	klog.InfoS("Patch status for pod", "pod", klog.KObj(pod), "podUID", uid, "patch", string(patchBytes))
 
 	if err != nil {
 		klog.InfoS("Failed to update status for pod", "pod", klog.KObj(pod), "err", err)
 		return
 	}
 	if unchanged {
-		klog.V(3).InfoS("Status for pod is up-to-date", "pod", klog.KObj(pod), "statusVersion", status.version)
+		klog.InfoS("Status for pod is up-to-date", "pod", klog.KObj(pod), "statusVersion", status.version)
 	} else {
-		klog.V(3).InfoS("Status for pod updated successfully", "pod", klog.KObj(pod), "statusVersion", status.version, "status", mergedStatus)
+		klog.InfoS("Status for pod updated successfully", "pod", klog.KObj(pod), "statusVersion", status.version, "status", mergedStatus)
 		pod = newPod
 		// We pass a new object (result of API call which contains updated ResourceVersion)
 		m.podStartupLatencyHelper.RecordStatusUpdated(pod)
@@ -1063,11 +1063,11 @@ func normalizeStatus(pod *v1.Pod, status *v1.PodStatus) *v1.PodStatus {
 func mergePodStatus(oldPodStatus, newPodStatus v1.PodStatus, couldHaveRunningContainers bool) v1.PodStatus {
 	podConditions := make([]v1.PodCondition, 0, len(oldPodStatus.Conditions)+len(newPodStatus.Conditions))
 
-	for _, c := range oldPodStatus.Conditions {
-		if !kubetypes.PodConditionByKubelet(c.Type) {
-			podConditions = append(podConditions, c)
-		}
-	}
+	// for _, c := range oldPodStatus.Conditions {
+	// 	if !kubetypes.PodConditionByKubelet(c.Type) {
+	// 		podConditions = append(podConditions, c)
+	// 	}
+	// }
 
 	transitioningToTerminalPhase := !podutil.IsPodPhaseTerminal(oldPodStatus.Phase) && podutil.IsPodPhaseTerminal(newPodStatus.Phase)
 

@@ -1765,6 +1765,7 @@ func (kl *Kubelet) generateAPIPodStatus(pod *v1.Pod, podStatus *kubecontainer.Po
 		oldPodStatus = pod.Status
 	}
 	s := kl.convertStatusToAPIStatus(pod, podStatus, oldPodStatus)
+
 	// calculate the next phase and preserve reason
 	allStatus := append(append([]v1.ContainerStatus{}, s.ContainerStatuses...), s.InitContainerStatuses...)
 	s.Phase = getPhase(pod, allStatus, podIsTerminal)
@@ -1830,11 +1831,18 @@ func (kl *Kubelet) generateAPIPodStatus(pod *v1.Pod, podStatus *kubecontainer.Po
 			s.Conditions = append(s.Conditions, c)
 		}
 	}
+	var resizeStatus []*v1.PodCondition
+	var su v1.PodResizeStatus
 	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
-		resizeStatus := kl.determinePodResizeStatus(pod, podIsTerminal)
+		resizeStatus = kl.determinePodResizeStatus(pod, podIsTerminal)
 		for _, c := range resizeStatus {
+			klog.InfoS("resize status 2", "pod", pod.Name, "status from 2", su, "status from 1", c.String())
 			s.Conditions = append(s.Conditions, *c)
 		}
+		if resizeStatus == nil {
+			klog.InfoS("resize status 2", "pod", pod.Name, "status from 2", su, "status from 1", "")
+		}
+
 	}
 
 	// copy over the pod disruption conditions from state which is already

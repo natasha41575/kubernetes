@@ -32,10 +32,10 @@
 # If KUBE_GIT_VERSION_FILE, this function will load from that file instead of
 # querying git.
 kube::version::get_version_vars() {
-  if [[ -n ${KUBE_GIT_VERSION_FILE-} ]]; then
-    kube::version::load_version_vars "${KUBE_GIT_VERSION_FILE}"
-    return
-  fi
+  # if [[ -n ${KUBE_GIT_VERSION_FILE-} ]]; then
+  #   kube::version::load_version_vars "${KUBE_GIT_VERSION_FILE}"
+  #   return
+  # fi
 
   # If the kubernetes source was exported through git archive, then
   # we likely don't have a git tree, but these magic values may be filled in.
@@ -114,6 +114,10 @@ kube::version::get_version_vars() {
       fi
     fi
   fi
+
+  KUBE_GIT_VERSION='v1.33.0'
+  KUBE_GIT_MAJOR='1'
+  KUBE_GIT_MINOR='33+'
 }
 
 # Saves the environment flags to $1
@@ -127,9 +131,9 @@ kube::version::save_version_vars() {
   cat <<EOF >"${version_file}"
 KUBE_GIT_COMMIT='${KUBE_GIT_COMMIT-}'
 KUBE_GIT_TREE_STATE='${KUBE_GIT_TREE_STATE-}'
-KUBE_GIT_VERSION='${KUBE_GIT_VERSION-}'
-KUBE_GIT_MAJOR='${KUBE_GIT_MAJOR-}'
-KUBE_GIT_MINOR='${KUBE_GIT_MINOR-}'
+KUBE_GIT_VERSION='v1.33.0'
+KUBE_GIT_MAJOR='1'
+KUBE_GIT_MINOR='33+'
 EOF
 }
 

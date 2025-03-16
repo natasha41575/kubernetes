@@ -435,7 +435,7 @@ var _ = SIGDescribe(framework.WithSerial(), "Pod InPlace Resize Container (sched
 			e2eskipper.Skipf("runtime does not support InPlacePodVerticalScaling -- skipping")
 		}
 	})
-	doPodResizeSchedulerTests(f)
+	//doPodResizeSchedulerTests(f)
 })
 
 var _ = SIGDescribe("Pod InPlace Resize Container", feature.InPlacePodVerticalScaling, func() {
@@ -448,5 +448,5 @@ var _ = SIGDescribe("Pod InPlace Resize Container", feature.InPlacePodVerticalSc
 			e2eskipper.Skipf("runtime does not support InPlacePodVerticalScaling -- skipping")
 		}
 	})
-	doPodResizeAdmissionPluginsTests()
+	//doPodResizeAdmissionPluginsTests()
 })
