@@ -88,6 +88,14 @@ type Manager interface {
 	// mirror pods, this means deleting from indexes for all non-mirror pods.
 	RemovePod(pod *v1.Pod)
 
+	// PopDeferredResize returns the next pod that has a deferred
+	// resize request that needs to be reevaluated.
+	PopDeferredResize() (pod *v1.Pod)
+
+	// PushDeferredResize queues a pod with a deferred resize request
+	// for later reevaluation.
+	PushDeferredResize(pod *v1.Pod)
+
 	// TranslatePodUID returns the actual UID of a pod. If the UID belongs to
 	// a mirror pod, returns the UID of its static pod. Otherwise, returns the
 	// original UID.
@@ -120,6 +128,14 @@ type basicManager struct {
 
 	// Mirror pod UID to pod UID map.
 	translationByUID map[kubetypes.MirrorPodUID]kubetypes.ResolvedPodUID
+
+	// Protects podsWithDeferredResizes.
+	deferredResizesLock sync.RWMutex
+
+	// A list of pods with deferred resize requests that need to be reevaluated.
+	// TODO (natasha41575): Turn this into a priority queue so that higher
+	// priority resizes can be reevaluated first.
+	podsWithDeferredResizes map[types.UID]*v1.Pod
 }
 
 // NewBasicPodManager returns a functional Manager.
@@ -139,6 +155,7 @@ func (pm *basicManager) SetPods(newPods []*v1.Pod) {
 	pm.mirrorPodByUID = make(map[kubetypes.MirrorPodUID]*v1.Pod)
 	pm.mirrorPodByFullName = make(map[string]*v1.Pod)
 	pm.translationByUID = make(map[kubetypes.MirrorPodUID]kubetypes.ResolvedPodUID)
+	pm.podsWithDeferredResizes = make(map[types.UID]*v1.Pod)
 
 	pm.updatePodsInternal(newPods...)
 }
@@ -151,6 +168,27 @@ func (pm *basicManager) UpdatePod(pod *v1.Pod) {
 	pm.lock.Lock()
 	defer pm.lock.Unlock()
 	pm.updatePodsInternal(pod)
+}
+
+func (pm *basicManager) PushDeferredResize(pod *v1.Pod) {
+	pm.deferredResizesLock.Lock()
+	defer pm.deferredResizesLock.Unlock()
+
+	pm.podsWithDeferredResizes[pod.UID] = pod
+}
+
+func (pm *basicManager) PopDeferredResize() *v1.Pod {
+	pm.deferredResizesLock.Lock()
+	defer pm.deferredResizesLock.Unlock()
+
+	// For now, this returns one of the queued resizes at random.
+	// TODO (natasha41575): Priorized resizes
+	for uid, pod := range pm.podsWithDeferredResizes {
+		delete(pm.podsWithDeferredResizes, uid)
+		return pod
+	}
+
+	return nil
 }
 
 // updateMetrics updates the metrics surfaced by the pod manager.

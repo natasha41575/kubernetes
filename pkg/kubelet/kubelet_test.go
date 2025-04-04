@@ -2770,8 +2770,10 @@ func TestHandlePodResourcesResizeWithSwap(t *testing.T) {
 			for i, c := range originalPod.Spec.Containers {
 				setContainerStatus(podStatus, &c, i)
 			}
-			updatedPod, err := kubelet.handlePodResourcesResize(newPod, podStatus)
+			updatedPod, err := kubelet.handlePodResourcesResize(newPod)
 			require.NoError(t, err)
+			kubelet.setPodResizeInProgressCondition(newPod, podStatus)
+
 			updatedPodCtr := updatedPod.Spec.Containers[0]
 			assert.Equal(t, tt.expectedAllocatedReqs, updatedPodCtr.Resources.Requests, "updated pod spec requests")
 
@@ -3188,8 +3190,9 @@ func TestHandlePodResourcesResize(t *testing.T) {
 				backoffKey := kuberuntime.GetStableKey(originalPod, originalCtr)
 				kubelet.crashLoopBackOff.Next(backoffKey, now)
 
-				updatedPod, err := kubelet.handlePodResourcesResize(newPod, podStatus)
+				updatedPod, err := kubelet.handlePodResourcesResize(newPod)
 				require.NoError(t, err)
+				kubelet.setPodResizeInProgressCondition(newPod, podStatus)
 
 				var updatedPodCtr v1.Container
 				if isSidecarContainer {
