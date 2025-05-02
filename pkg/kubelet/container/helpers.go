@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"strconv"
 	"strings"
 
 	"k8s.io/klog/v2"
@@ -106,6 +107,14 @@ func ShouldContainerBeRestarted(container *v1.Container, pod *v1.Pod, podStatus 
 		}
 	}
 	return true
+}
+
+// GetStableKey generates a key (string) to uniquely identify a
+// (pod, container) tuple. The key should include the content of the
+// container, so that any change to the container generates a new key.
+func GetStableKey(pod *v1.Pod, container *v1.Container) string {
+	hash := strconv.FormatUint(HashContainer(container), 16)
+	return fmt.Sprintf("%s_%s_%s_%s_%s", pod.Name, pod.Namespace, string(pod.UID), container.Name, hash)
 }
 
 // HashContainer returns the hash of the container. It is used to compare
