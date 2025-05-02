@@ -1129,3 +1129,26 @@ func TestHasAnyActiveRegularContainerStarted(t *testing.T) {
 		})
 	}
 }
+
+func TestStableKey(t *testing.T) {
+	container := &v1.Container{
+		Name:  "test_container",
+		Image: "foo/image:v1",
+	}
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test_pod",
+			Namespace: "test_pod_namespace",
+			UID:       "test_pod_uid",
+		},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{*container},
+		},
+	}
+	oldKey := GetStableKey(pod, container)
+
+	// Updating the container image should change the key.
+	container.Image = "foo/image:v2"
+	newKey := GetStableKey(pod, container)
+	assert.NotEqual(t, oldKey, newKey)
+}
