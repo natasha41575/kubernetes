@@ -51,7 +51,6 @@ import (
 	"k8s.io/utils/ptr"
 
 	v1 "k8s.io/api/core/v1"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
@@ -698,7 +697,16 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	klet.podManager = kubepod.NewBasicPodManager()
 
 	klet.statusManager = status.NewManager(klet.kubeClient, klet.podManager, klet, kubeDeps.PodStartupLatencyTracker)
-	klet.allocationManager = allocation.NewManager(klet.getRootDir())
+	klet.allocationManager = allocation.NewManager(
+		klet.getRootDir(),
+		klet.statusManager,
+		klet.crashLoopBackOff,
+		&klet.podResizeMutex,
+		klet.CanResizePod,
+		func(pod *v1.Pod) {
+			klet.SetPodWatchCondition(pod.UID, "podResizeAllocated", func(*kubecontainer.PodStatus) bool { return true })
+		},
+	)
 
 	klet.resourceAnalyzer = serverstats.NewResourceAnalyzer(klet, kubeCfg.VolumeStatsAggPeriod.Duration, kubeDeps.Recorder)
 
@@ -1918,18 +1926,9 @@ func (kl *Kubelet) SyncPod(ctx context.Context, updateType kubetypes.SyncPodType
 		}
 	}
 
-	// handlePodResourcesResize updates the pod to use the allocated resources. This should come
-	// before the main business logic of SyncPod, so that a consistent view of the pod is used
-	// across the sync loop.
 	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
-		// Handle pod resize here instead of doing it in HandlePodUpdates because
-		// this conveniently retries any Deferred resize requests
-		// TODO(vinaykul,InPlacePodVerticalScaling): Investigate doing this in HandlePodUpdates + periodic SyncLoop scan
-		//     See: https://github.com/kubernetes/kubernetes/pull/102884#discussion_r663160060
-		pod, err = kl.handlePodResourcesResize(pod, podStatus)
-		if err != nil {
-			return false, err
-		}
+		// Check whether there is a pod resize currently in progress.
+		pod = kl.updatePodResizeConditions(pod, podStatus)
 	}
 
 	// Generate final API pod status with pod and status manager status
@@ -2069,8 +2068,10 @@ func (kl *Kubelet) SyncPod(ctx context.Context, updateType kubetypes.SyncPodType
 	for _, r := range result.SyncResults {
 		if r.Action == kubecontainer.ResizePodInPlace {
 			if r.Error == nil {
-				// The pod was resized successfully, clear any pod resize errors in the PodResizeInProgress condition.
+				// The pod was resized successfully, clear any pod resize errors in the PodResizeInProgress condition,
+				// and signal the allocationManager to attempt resizes that were previously deferred.
 				kl.statusManager.SetPodResizeInProgressCondition(pod.UID, "", "", true)
+				kl.allocationManager.RetryPendingResizes()
 			} else {
 				kl.statusManager.SetPodResizeInProgressCondition(pod.UID, v1.PodReasonError, r.Message, false)
 			}
@@ -2654,6 +2655,8 @@ func (kl *Kubelet) HandlePodAdditions(pods []*v1.Pod) {
 		kl.podResizeMutex.Lock()
 		defer kl.podResizeMutex.Unlock()
 	}
+
+	var resizeQueueUpdated bool
 	for _, pod := range pods {
 		// Always add the pod to the pod manager. Kubelet relies on the pod
 		// manager as the source of truth for the desired state. If a pod does
@@ -2693,7 +2696,7 @@ func (kl *Kubelet) HandlePodAdditions(pods []*v1.Pod) {
 			if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
 				// To handle kubelet restarts, test pod admissibility using AllocatedResources values
 				// (for cpu & memory) from checkpoint store. If found, that is the source of truth.
-				allocatedPod, _ := kl.allocationManager.UpdatePodFromAllocation(pod)
+				allocatedPod, updatedFromAllocation := kl.allocationManager.UpdatePodFromAllocation(pod)
 
 				// Check if we can admit the pod; if not, reject it.
 				if ok, reason, message := kl.canAdmitPod(allocatedPods, allocatedPod); !ok {
@@ -2710,6 +2713,25 @@ func (kl *Kubelet) HandlePodAdditions(pods []*v1.Pod) {
 					//TODO(vinaykul,InPlacePodVerticalScaling): Can we recover from this in some way? Investigate
 					klog.ErrorS(err, "SetPodAllocation failed", "pod", klog.KObj(pod))
 				}
+
+				// Backfill the queue of pending resizes.
+				if updatedFromAllocation {
+					if resizable, msg := kuberuntime.IsInPlacePodVerticalScalingAllowed(pod); !resizable {
+						// If there is a pending resize but the resize is not allowed, mark as infeasible.
+						kl.statusManager.SetPodResizePendingCondition(pod.UID, v1.PodReasonInfeasible, msg)
+
+					} else if resizeNotAllowed, msg := disallowResizeForSwappableContainers(kl.containerRuntime, pod, allocatedPod); resizeNotAllowed {
+						// If this resize involve swap recalculation, set as infeasible, as IPPR with swap is not supported for beta.
+						kl.statusManager.SetPodResizePendingCondition(pod.UID, v1.PodReasonInfeasible, msg)
+
+					} else {
+						alreadyPending := kl.allocationManager.PushPendingResize(pod)
+						if !alreadyPending {
+							resizeQueueUpdated = true
+						}
+					}
+				}
+
 			} else {
 				// Check if we can admit the pod; if not, reject it.
 				if ok, reason, message := kl.canAdmitPod(allocatedPods, pod); !ok {
@@ -2730,12 +2752,20 @@ func (kl *Kubelet) HandlePodAdditions(pods []*v1.Pod) {
 			StartTime:  start,
 		})
 	}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
+		if resizeQueueUpdated {
+			kl.allocationManager.RetryPendingResizes()
+		}
+	}
 }
 
 // HandlePodUpdates is the callback in the SyncHandler interface for pods
 // being updated from a config source.
 func (kl *Kubelet) HandlePodUpdates(pods []*v1.Pod) {
 	start := kl.clock.Now()
+
+	var resizeQueueUpdated bool
 	for _, pod := range pods {
 		kl.podManager.UpdatePod(pod)
 
@@ -2747,12 +2777,39 @@ func (kl *Kubelet) HandlePodUpdates(pods []*v1.Pod) {
 			}
 		}
 
+		if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
+			allocatedPod, updatedFromAllocation := kl.allocationManager.UpdatePodFromAllocation(pod)
+			if updatedFromAllocation {
+				if resizable, msg := kuberuntime.IsInPlacePodVerticalScalingAllowed(pod); !resizable {
+					// If there is a pending resize but the resize is not allowed, mark as infeasible.
+					kl.statusManager.SetPodResizePendingCondition(pod.UID, v1.PodReasonInfeasible, msg)
+
+				} else if resizeNotAllowed, msg := disallowResizeForSwappableContainers(kl.containerRuntime, pod, allocatedPod); resizeNotAllowed {
+					// If this resize involve swap recalculation, set as infeasible, as IPPR with swap is not supported for beta.
+					kl.statusManager.SetPodResizePendingCondition(pod.UID, v1.PodReasonInfeasible, msg)
+
+				} else {
+					// Resizes that do not increase resource requests can be applied immediately.
+					alreadyPending := kl.allocationManager.PushPendingResize(pod)
+					if !alreadyPending {
+						resizeQueueUpdated = true
+					}
+				}
+			}
+		}
+
 		kl.podWorkers.UpdatePod(UpdatePodOptions{
 			Pod:        pod,
 			MirrorPod:  mirrorPod,
 			UpdateType: kubetypes.SyncPodUpdate,
 			StartTime:  start,
 		})
+	}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
+		if resizeQueueUpdated {
+			kl.allocationManager.RetryPendingResizes()
+		}
 	}
 }
 
@@ -2784,6 +2841,12 @@ func (kl *Kubelet) HandlePodRemoves(pods []*v1.Pod) {
 		if err := kl.deletePod(pod); err != nil {
 			klog.V(2).InfoS("Failed to delete pod", "pod", klog.KObj(pod), "err", err)
 		}
+
+		kl.allocationManager.RemovePendingResize(pod.UID)
+	}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
+		kl.allocationManager.RetryPendingResizes()
 	}
 }
 
@@ -2862,11 +2925,31 @@ func (kl *Kubelet) HandlePodSyncs(pods []*v1.Pod) {
 	}
 }
 
+// updatePodResizeConditions checks if a pod resize is currently in progress, and sets
+// the PodResizeInProgress condition accordingly. This returns the allocated pod.
+func (kl *Kubelet) updatePodResizeConditions(pod *v1.Pod, podStatus *kubecontainer.PodStatus) *v1.Pod {
+	allocatedPod, updated := kl.allocationManager.UpdatePodFromAllocation(pod)
+	if kl.isPodResizeInProgress(allocatedPod, podStatus) {
+		// If a resize is in progress, make sure the cache has the correct state in case the Kubelet restarted.
+		kl.statusManager.SetPodResizeInProgressCondition(pod.UID, "", "", false)
+	} else {
+		// (Allocated == Actual) => clear the resize in-progress status.
+		kl.statusManager.ClearPodResizeInProgressCondition(pod.UID)
+	}
+
+	if !updated {
+		kl.statusManager.ClearPodResizePendingCondition(pod.UID)
+		kl.allocationManager.RemovePendingResize(pod.UID)
+	}
+
+	return allocatedPod
+}
+
 // canResizePod determines if the requested resize is currently feasible.
 // pod should hold the desired (pre-allocated) spec.
 // Returns true if the resize can proceed; returns a reason and message
 // otherwise.
-func (kl *Kubelet) canResizePod(pod *v1.Pod) (bool, string, string) {
+func (kl *Kubelet) CanResizePod(pod *v1.Pod) (bool, string, string) {
 	if v1qos.GetPodQOS(pod) == v1.PodQOSGuaranteed && !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingExclusiveCPUs) {
 		if kl.containerManager.GetNodeConfig().CPUManagerPolicy == "static" {
 			msg := "Resize is infeasible for Guaranteed Pods alongside CPU Manager static policy"
@@ -2903,6 +2986,20 @@ func (kl *Kubelet) canResizePod(pod *v1.Pod) (bool, string, string) {
 		klog.V(3).InfoS(msg, "pod", klog.KObj(pod))
 		return false, v1.PodReasonInfeasible, msg
 
+	}
+
+	// When doing the fit check, in addition to overwriting the desired resources with the allocated resources,
+	//  we should also overwrite the actual resources in the status with the actuated resources.
+	// (This is a bit hacky, but lets us reuse the existing scheduler libraries without a major refactor)
+
+	po, _ := kl.allocationManager.UpdatePodFromAllocation(pod)
+	containerAllocatedResources := make(map[string]v1.ResourceRequirements)
+	for _, container := range po.Spec.Containers {
+		containerAllocatedResources[container.Name] = container.Resources
+	}
+	for i, c := range pod.Status.ContainerStatuses {
+		r := containerAllocatedResources[c.Name]
+		pod.Status.ContainerStatuses[i].Resources = &r
 	}
 
 	// Treat the existing pod needing resize as a new pod with desired resources seeking admit.
@@ -2951,80 +3048,6 @@ func disallowResizeForSwappableContainers(runtime kubecontainer.Runtime, desired
 		}
 	}
 	return false, ""
-}
-
-// handlePodResourcesResize returns the "allocated pod", which should be used for all resource
-// calculations after this function is called. It also updates the cached ResizeStatus according to
-// the allocation decision and pod status.
-func (kl *Kubelet) handlePodResourcesResize(pod *v1.Pod, podStatus *kubecontainer.PodStatus) (allocatedPod *v1.Pod, err error) {
-	// Always check whether a resize is in progress so we can set the PodResizeInProgressCondition
-	// accordingly.
-	defer func() {
-		if err != nil {
-			return
-		}
-		if kl.isPodResizeInProgress(allocatedPod, podStatus) {
-			// If a resize is in progress, make sure the cache has the correct state in case the Kubelet restarted.
-			kl.statusManager.SetPodResizeInProgressCondition(pod.UID, "", "", false)
-		} else {
-			// (Allocated == Actual) => clear the resize in-progress status.
-			kl.statusManager.ClearPodResizeInProgressCondition(pod.UID)
-		}
-	}()
-
-	podFromAllocation, updated := kl.allocationManager.UpdatePodFromAllocation(pod)
-	if !updated {
-		// Desired resources == allocated resources. Pod allocation does not need to be updated.
-		kl.statusManager.ClearPodResizePendingCondition(pod.UID)
-		return podFromAllocation, nil
-
-	} else if resizable, msg := kuberuntime.IsInPlacePodVerticalScalingAllowed(pod); !resizable {
-		// If there is a pending resize but the resize is not allowed, always use the allocated resources.
-		kl.statusManager.SetPodResizePendingCondition(pod.UID, v1.PodReasonInfeasible, msg)
-		return podFromAllocation, nil
-	} else if resizeNotAllowed, msg := disallowResizeForSwappableContainers(kl.containerRuntime, pod, podFromAllocation); resizeNotAllowed {
-		// If this resize involve swap recalculation, set as infeasible, as IPPR with swap is not supported for beta.
-		kl.statusManager.SetPodResizePendingCondition(pod.UID, v1.PodReasonInfeasible, msg)
-		return podFromAllocation, nil
-	}
-
-	kl.podResizeMutex.Lock()
-	defer kl.podResizeMutex.Unlock()
-	// Desired resources != allocated resources. Can we update the allocation to the desired resources?
-	fit, reason, message := kl.canResizePod(pod)
-	if fit {
-		// Update pod resource allocation checkpoint
-		if err := kl.allocationManager.SetAllocatedResources(pod); err != nil {
-			return nil, err
-		}
-		kl.statusManager.ClearPodResizePendingCondition(pod.UID)
-
-		// Clear any errors that may have been surfaced from a previous resize. The condition will be
-		// added back as needed in the defer block, but this prevents old errors from being preserved.
-		kl.statusManager.ClearPodResizeInProgressCondition(pod.UID)
-
-		for i, container := range pod.Spec.Containers {
-			if !apiequality.Semantic.DeepEqual(container.Resources, podFromAllocation.Spec.Containers[i].Resources) {
-				key := kuberuntime.GetStableKey(pod, &container)
-				kl.crashLoopBackOff.Reset(key)
-			}
-		}
-		for i, container := range pod.Spec.InitContainers {
-			if podutil.IsRestartableInitContainer(&container) {
-				if !apiequality.Semantic.DeepEqual(container.Resources, podFromAllocation.Spec.InitContainers[i].Resources) {
-					key := kuberuntime.GetStableKey(pod, &container)
-					kl.crashLoopBackOff.Reset(key)
-				}
-			}
-		}
-		return pod, nil
-	}
-
-	if reason != "" {
-		kl.statusManager.SetPodResizePendingCondition(pod.UID, reason, message)
-	}
-
-	return podFromAllocation, nil
 }
 
 // isPodResizingInProgress checks whether the actuated resizable resources differ from the allocated resources
