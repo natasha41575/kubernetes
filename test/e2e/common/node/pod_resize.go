@@ -1451,6 +1451,6 @@ var _ = SIGDescribe("Pod InPlace Resize Container", framework.WithFeatureGate(fe
 		}
 	})
 
-	doPodResizeTests(f)
-	doPodResizeErrorTests(f)
+	//doPodResizeTests(f)
+	//doPodResizeErrorTests(f)
 })

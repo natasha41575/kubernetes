@@ -2789,7 +2789,6 @@ func (kl *Kubelet) HandlePodUpdates(pods []*v1.Pod) {
 					kl.statusManager.SetPodResizePendingCondition(pod.UID, v1.PodReasonInfeasible, msg)
 
 				} else {
-					// Resizes that do not increase resource requests can be applied immediately.
 					alreadyPending := kl.allocationManager.PushPendingResize(pod)
 					if !alreadyPending {
 						resizeQueueUpdated = true

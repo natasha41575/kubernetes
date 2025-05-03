@@ -219,7 +219,7 @@ func newManager(allocated, actuated state.State,
 
 	// Start a goroutine to periodically check for pending resizes and process them if needed.
 	// We retry all pending resizes every 3 minutes or when explicitly signaled.
-	ticker := time.NewTicker(3 * time.Minute)
+	ticker := time.NewTicker(10 * time.Second)
 	go func() {
 		for {
 			select {
