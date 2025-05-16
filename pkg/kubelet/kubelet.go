@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	sysruntime "runtime"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,6 +45,7 @@ import (
 	"k8s.io/mount-utils"
 
 	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/tainttoleration"
 	utilfs "k8s.io/kubernetes/pkg/util/filesystem"
 	netutils "k8s.io/utils/net"
 	"k8s.io/utils/ptr"
@@ -84,6 +86,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cloudresource"
 	"k8s.io/kubernetes/pkg/kubelet/clustertrustbundle"
 	"k8s.io/kubernetes/pkg/kubelet/cm"
+	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	"k8s.io/kubernetes/pkg/kubelet/config"
 	"k8s.io/kubernetes/pkg/kubelet/configmap"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
@@ -231,6 +234,27 @@ var (
 	// ContainerLogsDir can be overwritten for testing usage
 	ContainerLogsDir = DefaultContainerLogsDir
 	etcHostsPath     = getContainerEtcHostsPath()
+
+	admissionRejectionReasons = sets.New[string](
+		lifecycle.AppArmorNotAdmittedReason,
+		lifecycle.PodOSSelectorNodeLabelDoesNotMatch,
+		lifecycle.PodOSNotSupported,
+		lifecycle.InvalidNodeInfo,
+		lifecycle.InitContainerRestartPolicyForbidden,
+		lifecycle.SupplementalGroupsPolicyNotSupported,
+		lifecycle.UnexpectedAdmissionError,
+		lifecycle.UnknownReason,
+		lifecycle.UnexpectedPredicateFailureType,
+		lifecycle.OutOfCPU,
+		lifecycle.OutOfMemory,
+		lifecycle.OutOfEphemeralStorage,
+		lifecycle.OutOfPods,
+		tainttoleration.ErrReasonNotMatch,
+		eviction.Reason,
+		sysctl.ForbiddenReason,
+		topologymanager.ErrorTopologyAffinity,
+		nodeshutdown.NodeShutdownNotAdmittedReason,
+	)
 
 	// This is exposed for unit tests.
 	goos = sysruntime.GOOS
@@ -1904,7 +1928,7 @@ func (kl *Kubelet) SyncPod(ctx context.Context, updateType kubetypes.SyncPodType
 				kl.statusManager.ClearPodResizeInProgressCondition(pod.UID)
 			}
 		} else {
-			pod, err = kl.allocationManager.HandlePodResourcesResize(allocatedPods, pod, kl.getNodeAnyWay, podStatus)
+			pod, err = kl.allocationManager.HandlePodResourcesResize(allocatedPods, pod, podStatus)
 			if err != nil {
 				return false, err
 			}
@@ -2366,6 +2390,22 @@ func (kl *Kubelet) rejectPod(pod *v1.Pod, reason, message string) {
 		Message:  "Pod was rejected: " + message})
 }
 
+func recordAdmissionRejection(reason string) {
+	// It is possible that the "reason" label can have high cardinality.
+	// To avoid this metric from exploding, we create an allowlist of known
+	// reasons, and only record reasons from this list. Use "Other" reason
+	// for the rest.
+	if admissionRejectionReasons.Has(reason) {
+		metrics.AdmissionRejectionsTotal.WithLabelValues(reason).Inc()
+	} else if strings.HasPrefix(reason, lifecycle.InsufficientResourcePrefix) {
+		// non-extended resources (like cpu, memory, ephemeral-storage, pods)
+		// are already included in admissionRejectionReasons.
+		metrics.AdmissionRejectionsTotal.WithLabelValues("OutOfExtendedResources").Inc()
+	} else {
+		metrics.AdmissionRejectionsTotal.WithLabelValues("Other").Inc()
+	}
+}
+
 // syncLoop is the main loop for processing changes. It watches for changes from
 // three channels (file, apiserver, and http) and creates a union of them. For
 // any new change seen, will run a sync against desired state and running state. If
@@ -2626,6 +2666,11 @@ func (kl *Kubelet) HandlePodAdditions(pods []*v1.Pod) {
 			// Check if we can admit the pod; if not, reject it.
 			if ok, reason, message := kl.allocationManager.AddPod(allocatedPods, pod); !ok {
 				kl.rejectPod(pod, reason, message)
+				// We avoid recording the metric in canAdmitPod because it's called
+				// repeatedly during a resize, which would inflate the metric.
+				// Instead, we record the metric here in HandlePodAdditions for new pods
+				// and capture resize events separately.
+				recordAdmissionRejection(reason)
 				continue
 			}
 		}
