@@ -2573,8 +2573,8 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 	cpu200m := resource.MustParse("200m")
 	mem100M := resource.MustParse("100Mi")
 	mem200M := resource.MustParse("200Mi")
-	cpuPolicyRestartNotRequired := v1.ContainerResizePolicy{ResourceName: v1.ResourceCPU, RestartPolicy: v1.NotRequired}
-	memPolicyRestartNotRequired := v1.ContainerResizePolicy{ResourceName: v1.ResourceMemory, RestartPolicy: v1.NotRequired}
+	cpuPolicyPreferNoRestart := v1.ContainerResizePolicy{ResourceName: v1.ResourceCPU, RestartPolicy: v1.PreferNoRestart}
+	memPolicyPreferNoRestart := v1.ContainerResizePolicy{ResourceName: v1.ResourceMemory, RestartPolicy: v1.PreferNoRestart}
 	cpuPolicyRestartRequired := v1.ContainerResizePolicy{ResourceName: v1.ResourceCPU, RestartPolicy: v1.RestartContainer}
 	memPolicyRestartRequired := v1.ContainerResizePolicy{ResourceName: v1.ResourceMemory, RestartPolicy: v1.RestartContainer}
 
@@ -2760,7 +2760,7 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 		"Update container CPU and memory resources with Restart policy for CPU": {
 			setupFn: func(pod *v1.Pod) {
 				c := &pod.Spec.Containers[0]
-				c.ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyRestartRequired, memPolicyRestartNotRequired}
+				c.ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyRestartRequired, memPolicyPreferNoRestart}
 				c.Resources = v1.ResourceRequirements{
 					Limits: v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
 				}
@@ -2791,7 +2791,7 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 		"Update container CPU and memory resources with Restart policy for memory": {
 			setupFn: func(pod *v1.Pod) {
 				c := &pod.Spec.Containers[2]
-				c.ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyRestartNotRequired, memPolicyRestartRequired}
+				c.ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyPreferNoRestart, memPolicyRestartRequired}
 				c.Resources = v1.ResourceRequirements{
 					Limits: v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
 				}
@@ -2822,7 +2822,7 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 		"Update container memory resources with Restart policy for CPU": {
 			setupFn: func(pod *v1.Pod) {
 				c := &pod.Spec.Containers[1]
-				c.ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyRestartRequired, memPolicyRestartNotRequired}
+				c.ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyRestartRequired, memPolicyPreferNoRestart}
 				c.Resources = v1.ResourceRequirements{
 					Limits: v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem200M},
 				}
@@ -2862,7 +2862,7 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 		"Update container CPU resources with Restart policy for memory": {
 			setupFn: func(pod *v1.Pod) {
 				c := &pod.Spec.Containers[2]
-				c.ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyRestartNotRequired, memPolicyRestartRequired}
+				c.ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyPreferNoRestart, memPolicyRestartRequired}
 				c.Resources = v1.ResourceRequirements{
 					Limits: v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem100M},
 				}
@@ -2902,7 +2902,7 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 		"Update container memory (requests only) with RestartContainer policy for memory": {
 			setupFn: func(pod *v1.Pod) {
 				c := &pod.Spec.Containers[2]
-				c.ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyRestartNotRequired, memPolicyRestartRequired}
+				c.ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyPreferNoRestart, memPolicyRestartRequired}
 				c.Resources = v1.ResourceRequirements{
 					Limits:   v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
 					Requests: v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
@@ -2938,7 +2938,7 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 		"Update container memory (requests only) with RestartNotRequired policy for memory": {
 			setupFn: func(pod *v1.Pod) {
 				c := &pod.Spec.Containers[2]
-				c.ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyRestartNotRequired, memPolicyRestartNotRequired}
+				c.ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyPreferNoRestart, memPolicyPreferNoRestart}
 				c.Resources = v1.ResourceRequirements{
 					Limits:   v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
 					Requests: v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
@@ -2994,7 +2994,7 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 			pod, status := makeBasePodAndStatus()
 			for idx := range pod.Spec.Containers {
 				// default resize policy when pod resize feature is enabled
-				pod.Spec.Containers[idx].ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyRestartNotRequired, memPolicyRestartNotRequired}
+				pod.Spec.Containers[idx].ResizePolicy = []v1.ContainerResizePolicy{cpuPolicyPreferNoRestart, memPolicyPreferNoRestart}
 			}
 			if test.setupFn != nil {
 				test.setupFn(pod)

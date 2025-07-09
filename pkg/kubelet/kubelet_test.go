@@ -2741,11 +2741,11 @@ func TestHandlePodResourcesResizeWithSwap(t *testing.T) {
 			},
 		},
 		{
-			name:                  "LimitedSwap Request Memory increase with ResizePolicy NotRequired - expect Infeasible",
+			name:                  "LimitedSwap Request Memory increase with ResizePolicy PreferNoRestart - expect Infeasible",
 			newRequests:           v1.ResourceList{v1.ResourceCPU: cpu500m, v1.ResourceMemory: mem500M},
 			expectedAllocatedReqs: v1.ResourceList{v1.ResourceCPU: cpu1000m, v1.ResourceMemory: mem1000M},
 			swapBehavior:          kubetypes.LimitedSwap,
-			resizePolicy:          v1.ContainerResizePolicy{ResourceName: v1.ResourceMemory, RestartPolicy: v1.NotRequired},
+			resizePolicy:          v1.ContainerResizePolicy{ResourceName: v1.ResourceMemory, RestartPolicy: v1.PreferNoRestart},
 			expectedResize: []*v1.PodCondition{
 				{
 					Type:    v1.PodResizePending,

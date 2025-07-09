@@ -2949,7 +2949,7 @@ func TestDropInPlacePodVerticalScaling(t *testing.T) {
 							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
 						},
 						ResizePolicy: []api.ContainerResizePolicy{
-							{ResourceName: api.ResourceCPU, RestartPolicy: api.NotRequired},
+							{ResourceName: api.ResourceCPU, RestartPolicy: api.PreferNoRestart},
 							{ResourceName: api.ResourceMemory, RestartPolicy: api.RestartContainer},
 						},
 					},
@@ -4322,7 +4322,7 @@ func TestValidateAllowSidecarResizePolicy(t *testing.T) {
 						Name:  "c1-init",
 						Image: "image",
 						ResizePolicy: []api.ContainerResizePolicy{
-							{ResourceName: api.ResourceCPU, RestartPolicy: api.NotRequired},
+							{ResourceName: api.ResourceCPU, RestartPolicy: api.PreferNoRestart},
 						},
 					},
 				},
@@ -4338,7 +4338,7 @@ func TestValidateAllowSidecarResizePolicy(t *testing.T) {
 						Image:         "image",
 						RestartPolicy: &restartPolicyAlways,
 						ResizePolicy: []api.ContainerResizePolicy{
-							{ResourceName: api.ResourceCPU, RestartPolicy: api.NotRequired},
+							{ResourceName: api.ResourceCPU, RestartPolicy: api.PreferNoRestart},
 						},
 					},
 					{
@@ -4358,14 +4358,14 @@ func TestValidateAllowSidecarResizePolicy(t *testing.T) {
 						Image:         "image",
 						RestartPolicy: &restartPolicyAlways,
 						ResizePolicy: []api.ContainerResizePolicy{
-							{ResourceName: api.ResourceCPU, RestartPolicy: api.NotRequired},
+							{ResourceName: api.ResourceCPU, RestartPolicy: api.PreferNoRestart},
 						},
 					},
 					{
 						Name:  "c1-init",
 						Image: "image",
 						ResizePolicy: []api.ContainerResizePolicy{
-							{ResourceName: api.ResourceCPU, RestartPolicy: api.NotRequired},
+							{ResourceName: api.ResourceCPU, RestartPolicy: api.PreferNoRestart},
 						},
 					},
 				},
@@ -4381,7 +4381,7 @@ func TestValidateAllowSidecarResizePolicy(t *testing.T) {
 						Image:         "image",
 						RestartPolicy: &restartPolicyAlways,
 						ResizePolicy: []api.ContainerResizePolicy{
-							{ResourceName: api.ResourceCPU, RestartPolicy: api.NotRequired},
+							{ResourceName: api.ResourceCPU, RestartPolicy: api.PreferNoRestart},
 						},
 					},
 					{
@@ -4401,14 +4401,14 @@ func TestValidateAllowSidecarResizePolicy(t *testing.T) {
 						Name:  "c1-init",
 						Image: "image",
 						ResizePolicy: []api.ContainerResizePolicy{
-							{ResourceName: api.ResourceCPU, RestartPolicy: api.NotRequired},
+							{ResourceName: api.ResourceCPU, RestartPolicy: api.PreferNoRestart},
 						},
 					},
 					{
 						Name:  "c2-init",
 						Image: "image",
 						ResizePolicy: []api.ContainerResizePolicy{
-							{ResourceName: api.ResourceCPU, RestartPolicy: api.NotRequired},
+							{ResourceName: api.ResourceCPU, RestartPolicy: api.PreferNoRestart},
 						},
 					},
 				},
@@ -4423,14 +4423,14 @@ func TestValidateAllowSidecarResizePolicy(t *testing.T) {
 						Name:  "c1",
 						Image: "image",
 						ResizePolicy: []api.ContainerResizePolicy{
-							{ResourceName: api.ResourceCPU, RestartPolicy: api.NotRequired},
+							{ResourceName: api.ResourceCPU, RestartPolicy: api.PreferNoRestart},
 						},
 					},
 					{
 						Name:  "c2",
 						Image: "image",
 						ResizePolicy: []api.ContainerResizePolicy{
-							{ResourceName: api.ResourceCPU, RestartPolicy: api.NotRequired},
+							{ResourceName: api.ResourceCPU, RestartPolicy: api.PreferNoRestart},
 						},
 					},
 				},

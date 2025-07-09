@@ -3426,7 +3426,7 @@ func validatePullPolicy(policy core.PullPolicy, fldPath *field.Path) field.Error
 }
 
 var supportedResizeResources = sets.New(core.ResourceCPU, core.ResourceMemory)
-var supportedResizePolicies = sets.New(core.NotRequired, core.RestartContainer)
+var supportedResizePolicies = sets.New(core.NotRequired, core.PreferNoRestart, core.RestartContainer)
 
 func validateResizePolicy(policyList []core.ContainerResizePolicy, fldPath *field.Path, podRestartPolicy *core.RestartPolicy) field.ErrorList {
 	allErrors := field.ErrorList{}
@@ -3446,15 +3446,15 @@ func validateResizePolicy(policyList []core.ContainerResizePolicy, fldPath *fiel
 			allErrors = append(allErrors, field.NotSupported(fldPath, p.ResourceName, sets.List(supportedResizeResources)))
 		}
 		switch p.RestartPolicy {
-		case core.NotRequired, core.RestartContainer:
+		case core.NotRequired, core.PreferNoRestart, core.RestartContainer:
 		case "":
 			allErrors = append(allErrors, field.Required(fldPath, ""))
 		default:
 			allErrors = append(allErrors, field.NotSupported(fldPath, p.RestartPolicy, sets.List(supportedResizePolicies)))
 		}
 
-		if *podRestartPolicy == core.RestartPolicyNever && p.RestartPolicy != core.NotRequired {
-			allErrors = append(allErrors, field.Invalid(fldPath, p.RestartPolicy, "must be 'NotRequired' when `restartPolicy` is 'Never'"))
+		if *podRestartPolicy == core.RestartPolicyNever && p.RestartPolicy != core.NotRequired && p.RestartPolicy != core.PreferNoRestart {
+			allErrors = append(allErrors, field.Invalid(fldPath, p.RestartPolicy, "must be 'PreferNoRestart' when `restartPolicy` is 'Never'"))
 		}
 	}
 	return allErrors
@@ -5849,7 +5849,7 @@ func validateContainerResize(newRequirements, oldRequirements *core.ResourceRequ
 			break
 		}
 	}
-	if memRestartPolicy == core.NotRequired || memRestartPolicy == "" {
+	if memRestartPolicy == core.NotRequired || memRestartPolicy == core.PreferNoRestart || memRestartPolicy == "" {
 		newLimit, hasNewLimit := newRequirements.Limits[core.ResourceMemory]
 		oldLimit, hasOldLimit := oldRequirements.Limits[core.ResourceMemory]
 		if hasNewLimit && hasOldLimit {

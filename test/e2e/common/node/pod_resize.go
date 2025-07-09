@@ -81,7 +81,7 @@ func doPodResizeTests(f *framework.Framework) {
 		testRollback bool
 	}
 
-	noRestart := v1.NotRequired
+	noRestart := v1.PreferNoRestart
 	doRestart := v1.RestartContainer
 	tests := []testCase{
 		{

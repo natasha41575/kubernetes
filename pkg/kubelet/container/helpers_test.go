@@ -915,8 +915,8 @@ func TestHashContainerWithoutResources(t *testing.T) {
 	cpu200m := resource.MustParse("200m")
 	mem100M := resource.MustParse("100Mi")
 	mem200M := resource.MustParse("200Mi")
-	cpuPolicyRestartNotRequired := v1.ContainerResizePolicy{ResourceName: v1.ResourceCPU, RestartPolicy: v1.NotRequired}
-	memPolicyRestartNotRequired := v1.ContainerResizePolicy{ResourceName: v1.ResourceMemory, RestartPolicy: v1.NotRequired}
+	cpuPolicyPreferNoRestart := v1.ContainerResizePolicy{ResourceName: v1.ResourceCPU, RestartPolicy: v1.PreferNoRestart}
+	memPolicyPreferNoRestart := v1.ContainerResizePolicy{ResourceName: v1.ResourceMemory, RestartPolicy: v1.PreferNoRestart}
 	cpuPolicyRestartRequired := v1.ContainerResizePolicy{ResourceName: v1.ResourceCPU, RestartPolicy: v1.RestartContainer}
 	memPolicyRestartRequired := v1.ContainerResizePolicy{ResourceName: v1.ResourceMemory, RestartPolicy: v1.RestartContainer}
 
@@ -936,7 +936,7 @@ func TestHashContainerWithoutResources(t *testing.T) {
 					Limits:   v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
 					Requests: v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
 				},
-				ResizePolicy: []v1.ContainerResizePolicy{cpuPolicyRestartRequired, memPolicyRestartNotRequired},
+				ResizePolicy: []v1.ContainerResizePolicy{cpuPolicyRestartRequired, memPolicyPreferNoRestart},
 			},
 			0x11a6d6d6,
 		},
@@ -949,7 +949,7 @@ func TestHashContainerWithoutResources(t *testing.T) {
 					Limits:   v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
 					Requests: v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
 				},
-				ResizePolicy: []v1.ContainerResizePolicy{cpuPolicyRestartNotRequired, memPolicyRestartRequired},
+				ResizePolicy: []v1.ContainerResizePolicy{cpuPolicyPreferNoRestart, memPolicyRestartRequired},
 			},
 			0x11a6d6d6,
 		},
@@ -962,7 +962,7 @@ func TestHashContainerWithoutResources(t *testing.T) {
 					Limits:   v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
 					Requests: v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
 				},
-				ResizePolicy: []v1.ContainerResizePolicy{cpuPolicyRestartRequired, memPolicyRestartNotRequired},
+				ResizePolicy: []v1.ContainerResizePolicy{cpuPolicyRestartRequired, memPolicyPreferNoRestart},
 			},
 			0x11a6d6d6,
 		},
@@ -975,7 +975,7 @@ func TestHashContainerWithoutResources(t *testing.T) {
 					Limits:   v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
 					Requests: v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
 				},
-				ResizePolicy: []v1.ContainerResizePolicy{cpuPolicyRestartNotRequired, memPolicyRestartRequired},
+				ResizePolicy: []v1.ContainerResizePolicy{cpuPolicyPreferNoRestart, memPolicyRestartRequired},
 			},
 			0x11a6d6d6,
 		},
