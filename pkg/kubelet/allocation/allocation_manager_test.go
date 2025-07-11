@@ -19,6 +19,7 @@ package allocation
 import (
 	"fmt"
 	goruntime "runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,8 @@ import (
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/kubernetes/fake"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	"k8s.io/component-base/metrics/legacyregistry"
+	"k8s.io/component-base/metrics/testutil"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/kubelet/allocation/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm"
@@ -39,6 +42,7 @@ import (
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	containertest "k8s.io/kubernetes/pkg/kubelet/container/testing"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
+	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	kubepod "k8s.io/kubernetes/pkg/kubelet/pod"
 	"k8s.io/kubernetes/pkg/kubelet/status"
 	statustest "k8s.io/kubernetes/pkg/kubelet/status/testing"
@@ -806,7 +810,7 @@ func TestHandlePodResourcesResize(t *testing.T) {
 					return newPod, true
 				}
 				allocationManager.PushPendingResize(originalPod.UID)
-				allocationManager.RetryPendingResizes()
+				allocationManager.RetryPendingResizes(TriggerReasonPodUpdated)
 				allocatedPod, _ := allocationManager.UpdatePodFromAllocation(newPod)
 				allocationManager.CheckPodResizeInProgress(allocatedPod, podStatus)
 
@@ -988,7 +992,7 @@ func TestHandlePodResourcesResizeWithSwap(t *testing.T) {
 				return newPod, true
 			}
 			allocationManager.PushPendingResize(testPod.UID)
-			allocationManager.RetryPendingResizes()
+			allocationManager.RetryPendingResizes(TriggerReasonPodUpdated)
 			allocatedPod, _ := allocationManager.UpdatePodFromAllocation(newPod)
 			allocationManager.CheckPodResizeInProgress(allocatedPod, podStatus)
 
@@ -1220,6 +1224,103 @@ func TestSortPendingResizes(t *testing.T) {
 		allocationManager.PushPendingResize(testPods[i].UID)
 	}
 	require.Equal(t, expected, allocationManager.(*manager).podsWithPendingResizes)
+}
+
+func TestRecordPodDeferredAcceptedResizes(t *testing.T) {
+	legacyregistry.MustRegister(metrics.PodDeferredAcceptedResizes)
+
+	cpu500m := resource.MustParse("500m")
+	cpu1000m := resource.MustParse("1")
+	mem500M := resource.MustParse("500Mi")
+	mem1000M := resource.MustParse("1Gi")
+
+	for _, tc := range []struct {
+		name                string
+		trigger             string
+		hasPendingCondition bool
+		expectedMetrics     string
+	}{
+		{
+			name:    "trigger reason: pod updated, no pending condition",
+			trigger: TriggerReasonPodUpdated,
+		},
+		{
+			name:                "trigger reason: pod resized, pending condition",
+			trigger:             TriggerReasonPodResized,
+			hasPendingCondition: true,
+			expectedMetrics: `
+					# HELP kubelet_pod_deferred_accepted_resizes_total [ALPHA] Cumulative number of deferred accepted resizes for pods.
+					# TYPE kubelet_pod_deferred_accepted_resizes_total counter
+					kubelet_pod_deferred_accepted_resizes_total{accepted_reason="pod_resized"} 1
+			`,
+		},
+		{
+			name:                "trigger reason: periodic retry, pending condition",
+			trigger:             triggerReasonPeriodic,
+			hasPendingCondition: true,
+			expectedMetrics: `
+					# HELP kubelet_pod_deferred_accepted_resizes_total [ALPHA] Cumulative number of deferred accepted resizes for pods.
+					# TYPE kubelet_pod_deferred_accepted_resizes_total counter
+					kubelet_pod_deferred_accepted_resizes_total{accepted_reason="periodic_retry"} 1
+					kubelet_pod_deferred_accepted_resizes_total{accepted_reason="pod_resized"} 1
+			`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:       "1111",
+					Name:      "pod1",
+					Namespace: "ns1",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name:  "c1",
+							Image: "i1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{v1.ResourceCPU: cpu1000m, v1.ResourceMemory: mem1000M},
+							},
+						},
+					},
+				},
+				Status: v1.PodStatus{
+					Phase: v1.PodRunning,
+					ContainerStatuses: []v1.ContainerStatus{
+						{
+							Name:               "c1",
+							AllocatedResources: v1.ResourceList{v1.ResourceCPU: cpu1000m, v1.ResourceMemory: mem1000M},
+							Resources:          &v1.ResourceRequirements{},
+						},
+					},
+				},
+			}
+
+			resizedPod := original.DeepCopy()
+			resizedPod.Spec.Containers[0].Resources.Requests = v1.ResourceList{v1.ResourceCPU: cpu500m, v1.ResourceMemory: mem500M}
+
+			am := makeAllocationManager(t, &containertest.FakeRuntime{}, []*v1.Pod{original})
+			am.SetAllocatedResources(original)
+			am.SetActuatedResources(original, nil)
+			if tc.hasPendingCondition {
+				am.(*manager).statusManager.SetPodResizePendingCondition(original.UID, v1.PodReasonDeferred, "message")
+			}
+
+			am.(*manager).getPodByUID = func(uid types.UID) (*v1.Pod, bool) {
+				return resizedPod, true
+			}
+			am.PushPendingResize(original.UID)
+			resizedPods := am.(*manager).retryPendingResizes(tc.trigger)
+
+			require.Len(t, resizedPods, 1)
+			require.Equal(t, original.UID, resizedPods[0].UID)
+
+			require.NoError(t, testutil.GatherAndCompare(
+				legacyregistry.DefaultGatherer, strings.NewReader(tc.expectedMetrics), "kubelet_pod_deferred_accepted_resizes_total",
+			))
+		})
+	}
+
 }
 
 func makeAllocationManager(t *testing.T, runtime *containertest.FakeRuntime, allocatedPods []*v1.Pod) Manager {
