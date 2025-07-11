@@ -54,6 +54,13 @@ const (
 
 	initialRetryDelay = 30 * time.Second
 	retryDelay        = 3 * time.Minute
+
+	TriggerReasonPodResized  = "pod_resized"
+	TriggerReasonPodUpdated  = "pod_updated"
+	TriggerReasonPodsAdded   = "pods_added"
+	TriggerReasonPodsRemoved = "pods_removed"
+
+	triggerReasonPeriodic = "periodic_retry"
 )
 
 // AllocationManager tracks pod resource allocations.
@@ -106,8 +113,8 @@ type Manager interface {
 	// Returns true if the pending resize was added to the queue, false if it was already present.
 	PushPendingResize(uid types.UID) bool
 
-	// RetryPendingResizes retries all pending resizes. It returns a list of successful resizes.
-	RetryPendingResizes() []*v1.Pod
+	// RetryPendingResizes retries all pending resizes.
+	RetryPendingResizes(trigger string)
 
 	// CheckPodResizeInProgress checks whether the actuated resizable resources differ from the allocated resources
 	// for any running containers.
@@ -204,7 +211,7 @@ func (m *manager) Run(ctx context.Context) {
 		for {
 			select {
 			case <-m.ticker.C:
-				successfulResizes := m.RetryPendingResizes()
+				successfulResizes := m.retryPendingResizes(triggerReasonPeriodic)
 				for _, po := range successfulResizes {
 					klog.InfoS("Successfully retried resize after timeout", "pod", klog.KObj(po))
 				}
@@ -216,7 +223,11 @@ func (m *manager) Run(ctx context.Context) {
 	}()
 }
 
-func (m *manager) RetryPendingResizes() []*v1.Pod {
+func (m *manager) RetryPendingResizes(trigger string) {
+	m.retryPendingResizes(trigger)
+}
+
+func (m *manager) retryPendingResizes(trigger string) []*v1.Pod {
 	m.allocationMutex.Lock()
 	defer m.allocationMutex.Unlock()
 
@@ -240,6 +251,7 @@ func (m *manager) RetryPendingResizes() []*v1.Pod {
 		}
 
 		oldResizeStatus := m.statusManager.GetPodResizeConditions(uid)
+		isDeferred := m.statusManager.IsPodResizeDeferred(uid)
 
 		resizeAllocated, err := m.handlePodResourcesResize(pod)
 		switch {
@@ -254,6 +266,9 @@ func (m *manager) RetryPendingResizes() []*v1.Pod {
 		default:
 			klog.V(4).InfoS("Pod resize successfully allocated", "pod", klog.KObj(pod))
 			successfulResizes = append(successfulResizes, pod)
+			if isDeferred {
+				metrics.PodDeferredAcceptedResizes.WithLabelValues(trigger).Inc()
+			}
 		}
 
 		// If the pod resize status has changed, we need to update the pod status.
@@ -265,7 +280,6 @@ func (m *manager) RetryPendingResizes() []*v1.Pod {
 
 	m.podsWithPendingResizes = newPendingResizes
 	return successfulResizes
-
 }
 
 func (m *manager) PushPendingResize(uid types.UID) bool {
@@ -554,6 +568,7 @@ func (m *manager) handlePodResourcesResize(pod *v1.Pod) (bool, error) {
 		// If there is a pending resize but the resize is not allowed, always use the allocated resources.
 		m.statusManager.SetPodResizePendingCondition(pod.UID, v1.PodReasonInfeasible, msg, pod.Generation)
 		return false, nil
+
 	} else if resizeNotAllowed, msg := disallowResizeForSwappableContainers(m.containerRuntime, pod, allocatedPod); resizeNotAllowed {
 		// If this resize involve swap recalculation, set as infeasible, as IPPR with swap is not supported for beta.
 		m.statusManager.SetPodResizePendingCondition(pod.UID, v1.PodReasonInfeasible, msg, pod.Generation)
@@ -713,7 +728,7 @@ func (m *manager) CheckPodResizeInProgress(allocatedPod *v1.Pod, podStatus *kube
 	} else if m.statusManager.ClearPodResizeInProgressCondition(allocatedPod.UID) {
 		// (Allocated == Actual) => clear the resize in-progress status.
 		// TODO(natasha41575): We only need to make this call if any of the resources were decreased.
-		m.RetryPendingResizes()
+		m.RetryPendingResizes(TriggerReasonPodResized)
 	}
 }
 
