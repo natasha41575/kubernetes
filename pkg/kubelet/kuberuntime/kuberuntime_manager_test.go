@@ -3284,8 +3284,10 @@ func TestDoPodResizeAction(t *testing.T) {
 	}
 
 	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
+	metrics.Register()
+	metrics.PodResizeDurationMilliseconds.Reset()
 
-	for _, tc := range []struct {
+	testCases := []struct {
 		testName                  string
 		currentResources          containerResources
 		desiredResources          containerResources
@@ -3408,7 +3410,8 @@ func TestDoPodResizeAction(t *testing.T) {
 			updatedResources:          []v1.ResourceName{v1.ResourceCPU, v1.ResourceMemory},
 			expectPodCgroupUpdates:    2, // cpu lim, memory lim
 		},
-	} {
+	}
+	for _, tc := range testCases {
 		t.Run(tc.testName, func(t *testing.T) {
 			_, _, m, err := createTestRuntimeManagerWithErrors(tc.runtimeErrors)
 			require.NoError(t, err)
@@ -3492,6 +3495,8 @@ func TestDoPodResizeAction(t *testing.T) {
 			mock.AssertExpectationsForObjects(t, mockPCM)
 		})
 	}
+
+	testutil.AssertHistogramTotalCount(t, "kubelet_pod_resize_duration_milliseconds", map[string]string{}, len(testCases))
 }
 
 func TestIncrementImageVolumeMetrics(t *testing.T) {
