@@ -45,6 +45,15 @@ import (
 	statusutil "k8s.io/kubernetes/pkg/util/pod"
 )
 
+const (
+	InfeasibleMessageFeatureGateOff           = "InPlacePodVerticalScaling is disabled"
+	InfeasibleMessageStaticPod                = "In-place resize of static-pods is not supported"
+	InfeasibleMessageSwapLimitation           = "In-place resize of containers with swap is not supported"
+	InfeasibleMessageStaticCPU                = "Resize is infeasible for Guaranteed Pods alongside CPU Manager static policy"
+	InfeasibleMessageStaticMemory             = "Resize is infeasible for Guaranteed Pods alongside Memory Manager static policy"
+	InfeasibleMessageInsufficientNodeCapacity = "Node didn't have enough capacity"
+)
+
 // A wrapper around v1.PodStatus that includes a version to enforce that stale pod statuses are
 // not sent to the API server.
 type versionedPodStatus struct {
@@ -345,6 +354,20 @@ func (m *manager) IsPodResizeInfeasible(podUID types.UID) bool {
 	defer m.podStatusesLock.RUnlock()
 
 	return m.podResizeConditions[podUID].PodResizePending != nil && m.podResizeConditions[podUID].PodResizePending.Reason == v1.PodReasonInfeasible
+}
+
+func (m *manager) RecordInProgressResizeCount() {
+	m.podStatusesLock.RLock()
+	defer m.podStatusesLock.RUnlock()
+	inProgressResizeCount := 0
+
+	for _, conditions := range m.podResizeConditions {
+		if conditions.PodResizeInProgress != nil {
+			inProgressResizeCount++
+		}
+	}
+
+	metrics.PodInProgressResizes.Set(float64(inProgressResizeCount))
 }
 
 func (m *manager) GetPodStatus(uid types.UID) (v1.PodStatus, bool) {

@@ -2337,6 +2337,130 @@ func TestRecordInProgressResizeCount(t *testing.T) {
 	}
 }
 
+func TestRecordPendingResizesCount(t *testing.T) {
+	legacyregistry.MustRegister(metrics.PodPendingResizes)
+
+	for _, tc := range []struct {
+		name               string
+		existingConditions map[types.UID]podResizeConditions
+		expected           string
+	}{
+		{
+			name: "one pod, no resize status",
+			existingConditions: map[types.UID]podResizeConditions{
+				"test-pod": {},
+			},
+		},
+		{
+			name: "one pod in progress",
+			existingConditions: map[types.UID]podResizeConditions{
+				"test-pod": {
+					PodResizeInProgress: &v1.PodCondition{
+						Type:   v1.PodResizeInProgress,
+						Status: v1.ConditionTrue,
+					},
+				},
+			},
+			expected: "",
+		},
+		{
+			name: "one pod deferred",
+			existingConditions: map[types.UID]podResizeConditions{
+				"test-pod": {
+					PodResizePending: &v1.PodCondition{
+						Type:    v1.PodResizePending,
+						Status:  v1.ConditionTrue,
+						Reason:  v1.PodReasonDeferred,
+						Message: "some-message",
+					},
+				},
+			},
+			expected: `
+			    # HELP kubelet_pod_pending_resizes [ALPHA] Number of pending resizes for pods.
+				# TYPE kubelet_pod_pending_resizes gauge
+				kubelet_pod_pending_resizes{reason="deferred",reason_detail="other"} 1
+			`,
+		},
+		{
+			name: "6 pods infeasible, each with a different reason",
+			existingConditions: map[types.UID]podResizeConditions{
+				"test-pod-1": {
+					PodResizePending: &v1.PodCondition{
+						Type:    v1.PodResizePending,
+						Status:  v1.ConditionTrue,
+						Reason:  v1.PodReasonInfeasible,
+						Message: InfeasibleMessageFeatureGateOff,
+					},
+				},
+				"test-pod-2": {
+					PodResizePending: &v1.PodCondition{
+						Type:    v1.PodResizePending,
+						Status:  v1.ConditionTrue,
+						Reason:  v1.PodReasonInfeasible,
+						Message: InfeasibleMessageStaticPod,
+					},
+				},
+				"test-pod-3": {
+					PodResizePending: &v1.PodCondition{
+						Type:    v1.PodResizePending,
+						Status:  v1.ConditionTrue,
+						Reason:  v1.PodReasonInfeasible,
+						Message: InfeasibleMessageSwapLimitation,
+					},
+				},
+				"test-pod-4": {
+					PodResizePending: &v1.PodCondition{
+						Type:    v1.PodResizePending,
+						Status:  v1.ConditionTrue,
+						Reason:  v1.PodReasonInfeasible,
+						Message: InfeasibleMessageStaticCPU,
+					},
+				},
+				"test-pod-5": {
+					PodResizePending: &v1.PodCondition{
+						Type:    v1.PodResizePending,
+						Status:  v1.ConditionTrue,
+						Reason:  v1.PodReasonInfeasible,
+						Message: InfeasibleMessageStaticMemory,
+					},
+				},
+				"test-pod-6": {
+					PodResizePending: &v1.PodCondition{
+						Type:    v1.PodResizePending,
+						Status:  v1.ConditionTrue,
+						Reason:  v1.PodReasonInfeasible,
+						Message: InfeasibleMessageInsufficientNodeCapacity,
+					},
+				},
+			},
+			expected: `
+			    # HELP kubelet_pod_pending_resizes [ALPHA] Number of pending resizes for pods.
+				# TYPE kubelet_pod_pending_resizes gauge
+				kubelet_pod_pending_resizes{reason="infeasible",reason_detail="feature_gate_off"} 1
+				kubelet_pod_pending_resizes{reason="infeasible",reason_detail="guaranteed_pod_cpu_manager_static_policy"} 1
+				kubelet_pod_pending_resizes{reason="infeasible",reason_detail="guaranteed_pod_memory_manager_static_policy"} 1
+				kubelet_pod_pending_resizes{reason="infeasible",reason_detail="insufficient_node_allocatable"} 1
+				kubelet_pod_pending_resizes{reason="infeasible",reason_detail="static_pod"} 1
+				kubelet_pod_pending_resizes{reason="infeasible",reason_detail="swap_limitation"} 1
+			`,
+		},
+		{
+			name:               "no pods",
+			existingConditions: make(map[types.UID]podResizeConditions),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := newTestManager(&fake.Clientset{})
+			manager.podResizeConditions = tc.existingConditions
+			manager.RecordPendingResizeCount()
+
+			require.NoError(t, testutil.GatherAndCompare(
+				legacyregistry.DefaultGatherer, strings.NewReader(tc.expected), "kubelet_pod_pending_resizes",
+			))
+		})
+	}
+}
+
 func statusEqual(left, right v1.PodStatus) bool {
 	left.Conditions = nil
 	right.Conditions = nil

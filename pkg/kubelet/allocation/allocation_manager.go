@@ -262,6 +262,7 @@ func (m *manager) RetryPendingResizes() []*v1.Pod {
 		}
 	}
 
+	m.statusManager.RecordPendingResizeCount()
 	m.podsWithPendingResizes = newPendingResizes
 	return successfulResizes
 
@@ -599,7 +600,7 @@ func disallowResizeForSwappableContainers(runtime kubecontainer.Runtime, desired
 			aSwapBehavior := runtime.GetContainerSwapBehavior(desiredPod, &desiredContainer)
 			bSwapBehavior := runtime.GetContainerSwapBehavior(allocatedPod, &allocatedContainer)
 			if aSwapBehavior != kubetypes.NoSwap || bSwapBehavior != kubetypes.NoSwap {
-				return true, "In-place resize of containers with swap is not supported."
+				return true, status.InfeasibleMessageSwapLimitation
 			}
 		}
 	}
@@ -638,13 +639,13 @@ func (m *manager) canResizePod(allocatedPods []*v1.Pod, pod *v1.Pod) (bool, stri
 	// lifecycle.PodAdmitAttributes, and combine canResizePod with canAdmitPod.
 	if v1qos.GetPodQOS(pod) == v1.PodQOSGuaranteed && !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingExclusiveCPUs) {
 		if m.containerManager.GetNodeConfig().CPUManagerPolicy == "static" {
-			msg := "Resize is infeasible for Guaranteed Pods alongside CPU Manager static policy"
+			msg := status.InfeasibleMessageStaticCPU
 			klog.V(3).InfoS(msg, "pod", format.Pod(pod))
 			return false, v1.PodReasonInfeasible, msg
 		}
 		if utilfeature.DefaultFeatureGate.Enabled(features.MemoryManager) {
 			if m.containerManager.GetNodeConfig().MemoryManagerPolicy == "Static" {
-				msg := "Resize is infeasible for Guaranteed Pods alongside Memory Manager static policy"
+				msg := status.InfeasibleMessageStaticMemory
 				klog.V(3).InfoS(msg, "pod", format.Pod(pod))
 				return false, v1.PodReasonInfeasible, msg
 			}
@@ -663,7 +664,7 @@ func (m *manager) canResizePod(allocatedPods []*v1.Pod, pod *v1.Pod) (bool, stri
 		} else {
 			msg = fmt.Sprintf("cpu, requested: %d, capacity: %d", cpuRequests, cpuAvailable)
 		}
-		msg = "Node didn't have enough capacity: " + msg
+		msg = fmt.Sprintf("%s: %s", status.InfeasibleMessageInsufficientNodeCapacity, msg)
 		klog.V(3).InfoS(msg, "pod", klog.KObj(pod))
 		return false, v1.PodReasonInfeasible, msg
 	}
