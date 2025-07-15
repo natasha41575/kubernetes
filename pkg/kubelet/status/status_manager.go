@@ -269,9 +269,15 @@ func (m *manager) SetPodResizePendingCondition(podUID types.UID, reason, message
 	m.podStatusesLock.Lock()
 	defer m.podStatusesLock.Unlock()
 
+	alreadyPending := m.podResizeConditions[podUID].PodResizePending != nil
+
 	m.podResizeConditions[podUID] = podResizeConditions{
 		PodResizePending:    updatedPodResizeCondition(v1.PodResizePending, m.podResizeConditions[podUID].PodResizePending, reason, message, observedGeneration),
 		PodResizeInProgress: m.podResizeConditions[podUID].PodResizeInProgress,
+	}
+
+	if !alreadyPending {
+		m.recordPendingResizeCount()
 	}
 }
 
@@ -308,10 +314,17 @@ func (m *manager) SetPodResizeInProgressCondition(podUID types.UID, reason, mess
 func (m *manager) ClearPodResizePendingCondition(podUID types.UID) {
 	m.podStatusesLock.Lock()
 	defer m.podStatusesLock.Unlock()
+
+	if m.podResizeConditions[podUID].PodResizePending == nil {
+		return
+	}
+
 	m.podResizeConditions[podUID] = podResizeConditions{
 		PodResizeInProgress: m.podResizeConditions[podUID].PodResizeInProgress,
 		PodResizePending:    nil,
 	}
+
+	m.recordPendingResizeCount()
 }
 
 // ClearPodResizeInProgressCondition clears the PodResizeInProgress condition for the pod from the cache.
@@ -827,6 +840,7 @@ func (m *manager) deletePodStatus(uid types.UID) {
 	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
 		delete(m.podResizeConditions, uid)
 		m.recordInProgressResizeCount()
+		m.recordPendingResizeCount()
 	}
 }
 
@@ -841,6 +855,7 @@ func (m *manager) RemoveOrphanedStatuses(logger klog.Logger, podUIDs map[types.U
 			if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
 				delete(m.podResizeConditions, key)
 				m.recordInProgressResizeCount()
+				m.recordPendingResizeCount()
 			}
 		}
 	}
@@ -1236,6 +1251,21 @@ func updatedPodResizeCondition(conditionType v1.PodConditionType, oldCondition *
 		ObservedGeneration: observedGeneration,
 		Reason:             reason,
 		Message:            message,
+	}
+}
+
+// recordPendingResizeCount sets the pending resize metric.
+func (m *manager) recordPendingResizeCount() {
+	pendingResizeCount := make(map[string]int)
+	for _, conditions := range m.podResizeConditions {
+		if conditions.PodResizePending != nil {
+			pendingResizeCount[strings.ToLower(conditions.PodResizePending.Reason)]++
+		}
+	}
+
+	metrics.PodPendingResizes.Reset()
+	for reason, count := range pendingResizeCount {
+		metrics.PodPendingResizes.WithLabelValues(reason).Set(float64(count))
 	}
 }
 
