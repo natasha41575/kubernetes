@@ -23,14 +23,17 @@ import (
 	v1 "k8s.io/api/core/v1"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/kubernetes/pkg/features"
+	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 )
 
 func IsInPlacePodVerticalScalingAllowed(pod *v1.Pod) (allowed bool, msg string) {
 	if !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
+		metrics.PodInfeasibleResizes.WithLabelValues("feature_gate_off").Inc()
 		return false, "InPlacePodVerticalScaling is disabled"
 	}
 	if kubetypes.IsStaticPod(pod) {
+		metrics.PodInfeasibleResizes.WithLabelValues("static_pod").Inc()
 		return false, "In-place resize of static-pods is not supported"
 	}
 	return true, ""

@@ -41,6 +41,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/config"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
+	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	"k8s.io/kubernetes/pkg/kubelet/status"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
@@ -610,6 +611,7 @@ func disallowResizeForSwappableContainers(runtime kubecontainer.Runtime, desired
 			aSwapBehavior := runtime.GetContainerSwapBehavior(desiredPod, &desiredContainer)
 			bSwapBehavior := runtime.GetContainerSwapBehavior(allocatedPod, &allocatedContainer)
 			if aSwapBehavior != kubetypes.NoSwap || bSwapBehavior != kubetypes.NoSwap {
+				metrics.PodInfeasibleResizes.WithLabelValues("swap_limitation").Inc()
 				return true, "In-place resize of containers with swap is not supported."
 			}
 		}
@@ -651,12 +653,14 @@ func (m *manager) canResizePod(allocatedPods []*v1.Pod, pod *v1.Pod) (bool, stri
 		if m.containerManager.GetNodeConfig().CPUManagerPolicy == "static" {
 			msg := "Resize is infeasible for Guaranteed Pods alongside CPU Manager static policy"
 			klog.V(3).InfoS(msg, "pod", format.Pod(pod))
+			metrics.PodInfeasibleResizes.WithLabelValues("guaranteed_pod_cpu_manager_static_policy").Inc()
 			return false, v1.PodReasonInfeasible, msg
 		}
 		if utilfeature.DefaultFeatureGate.Enabled(features.MemoryManager) {
 			if m.containerManager.GetNodeConfig().MemoryManagerPolicy == "Static" {
 				msg := "Resize is infeasible for Guaranteed Pods alongside Memory Manager static policy"
 				klog.V(3).InfoS(msg, "pod", format.Pod(pod))
+				metrics.PodInfeasibleResizes.WithLabelValues("guaranteed_pod_memory_manager_static_policy").Inc()
 				return false, v1.PodReasonInfeasible, msg
 			}
 		}
@@ -676,6 +680,7 @@ func (m *manager) canResizePod(allocatedPods []*v1.Pod, pod *v1.Pod) (bool, stri
 		}
 		msg = "Node didn't have enough capacity: " + msg
 		klog.V(3).InfoS(msg, "pod", klog.KObj(pod))
+		metrics.PodInfeasibleResizes.WithLabelValues("insufficient_node_allocatable").Inc()
 		return false, v1.PodReasonInfeasible, msg
 	}
 
