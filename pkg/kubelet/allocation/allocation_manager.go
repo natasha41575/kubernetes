@@ -36,7 +36,6 @@ import (
 	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/kubelet/allocation/state"
-	"k8s.io/kubernetes/pkg/kubelet/cm"
 	"k8s.io/kubernetes/pkg/kubelet/config"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
@@ -112,12 +111,10 @@ type Manager interface {
 type manager struct {
 	allocated state.State
 
-	admitHandlers           lifecycle.PodAdmitHandlers
-	containerRuntime        kubecontainer.Runtime
-	statusManager           status.Manager
-	sourcesReady            config.SourcesReady
-	nodeConfig              cm.NodeConfig
-	nodeAllocatableAbsolute v1.ResourceList
+	admitHandlers    lifecycle.PodAdmitHandlers
+	containerRuntime kubecontainer.Runtime
+	statusManager    status.Manager
+	sourcesReady     config.SourcesReady
 
 	ticker         *time.Ticker
 	triggerPodSync func(pod *v1.Pod)
@@ -131,8 +128,6 @@ type manager struct {
 }
 
 func NewManager(checkpointDirectory string,
-	nodeConfig cm.NodeConfig,
-	nodeAllocatableAbsolute v1.ResourceList,
 	statusManager status.Manager,
 	triggerPodSync func(pod *v1.Pod),
 	getActivePods func() []*v1.Pod,
@@ -143,11 +138,9 @@ func NewManager(checkpointDirectory string,
 	return &manager{
 		allocated: newStateImpl(checkpointDirectory, allocatedPodsStateFile),
 
-		statusManager:           statusManager,
-		admitHandlers:           lifecycle.PodAdmitHandlers{},
-		sourcesReady:            sourcesReady,
-		nodeConfig:              nodeConfig,
-		nodeAllocatableAbsolute: nodeAllocatableAbsolute,
+		statusManager: statusManager,
+		admitHandlers: lifecycle.PodAdmitHandlers{},
+		sourcesReady:  sourcesReady,
 
 		ticker:         time.NewTicker(initialRetryDelay),
 		triggerPodSync: triggerPodSync,
@@ -175,9 +168,7 @@ func newStateImpl(checkpointDirectory, checkpointName string) state.State {
 
 // NewInMemoryManager returns an allocation manager that doesn't persist state.
 // For testing purposes only!
-func NewInMemoryManager(nodeConfig cm.NodeConfig,
-	nodeAllocatableAbsolute v1.ResourceList,
-	statusManager status.Manager,
+func NewInMemoryManager(statusManager status.Manager,
 	triggerPodSync func(pod *v1.Pod),
 	getActivePods func() []*v1.Pod,
 	getPodByUID func(types.UID) (*v1.Pod, bool),
@@ -186,11 +177,9 @@ func NewInMemoryManager(nodeConfig cm.NodeConfig,
 	return &manager{
 		allocated: state.NewStateMemory(nil),
 
-		statusManager:           statusManager,
-		admitHandlers:           lifecycle.PodAdmitHandlers{},
-		sourcesReady:            sourcesReady,
-		nodeConfig:              nodeConfig,
-		nodeAllocatableAbsolute: nodeAllocatableAbsolute,
+		statusManager: statusManager,
+		admitHandlers: lifecycle.PodAdmitHandlers{},
+		sourcesReady:  sourcesReady,
 
 		ticker:         time.NewTicker(initialRetryDelay),
 		triggerPodSync: triggerPodSync,
