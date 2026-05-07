@@ -29371,7 +29371,12 @@ func TestValidatePodResize(t *testing.T) {
 				test.old.Spec.RestartPolicy = "Always"
 			}
 
-			errs := ValidatePodResize(test.new, test.old, PodValidationOptions{AllowSidecarResizePolicy: true, InPlacePodLevelResourcesVerticalScalingEnabled: true, PodLevelResourcesEnabled: true})
+			errs := ValidatePodResize(test.new, test.old, PodValidationOptions{
+				AllowSidecarResizePolicy:                            true,
+				InPlacePodLevelResourcesVerticalScalingEnabled:      true,
+				PodLevelResourcesEnabled:                            true,
+				InPlacePodVerticalScalingMemoryBackedVolumesEnabled: true,
+			})
 
 			if test.err == "" {
 				if len(errs) != 0 {

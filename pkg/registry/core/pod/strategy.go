@@ -134,7 +134,7 @@ func (podStrategy) Canonicalize(obj runtime.Object) {
 }
 
 // AllowCreateOnUpdate is false for pods.
-func (podStrategy) AllowCreateOnUpdate() bool {
+func (podStrategy) AllowCreateOnUpdate(ctx context.Context) bool {
 	return false
 }
 
@@ -156,7 +156,7 @@ func (podStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Object
 }
 
 // AllowUnconditionalUpdate allows pods to be overwritten
-func (podStrategy) AllowUnconditionalUpdate() bool {
+func (podStrategy) AllowUnconditionalUpdate(ctx context.Context) bool {
 	return true
 }
 
@@ -361,15 +361,19 @@ var ResizeStrategy = podResizeStrategy{
 // ResizePolicy and certain metadata. If InPlacePodLevelResourcesVerticalScaling
 // feature is enabled, pod-level resources are also preserved.
 func dropNonResizeUpdates(newPod, oldPod *api.Pod) *api.Pod {
-	// Containers are not allowed to be added, removed, re-ordered, or renamed.
+	// Containers and volumes are not allowed to be added, removed, re-ordered, or renamed.
 	// If we detect any of these changes, we will return new podspec as-is and
 	// allow the validation to catch the error and drop the update.
-	if len(newPod.Spec.Containers) != len(oldPod.Spec.Containers) || len(newPod.Spec.InitContainers) != len(oldPod.Spec.InitContainers) {
+	if len(newPod.Spec.Containers) != len(oldPod.Spec.Containers) ||
+		len(newPod.Spec.InitContainers) != len(oldPod.Spec.InitContainers) ||
+		len(newPod.Spec.Volumes) != len(oldPod.Spec.Volumes) {
 		return newPod
 	}
 
 	// Preserve the incoming pod-level resource from the new pod object.
 	newPodResources := newPod.Spec.Resources
+
+	newVolumes := newPod.Spec.Volumes
 
 	containers := dropNonResizeUpdatesForContainers(newPod.Spec.Containers, oldPod.Spec.Containers)
 	initContainers := dropNonResizeUpdatesForContainers(newPod.Spec.InitContainers, oldPod.Spec.InitContainers)
@@ -379,6 +383,14 @@ func dropNonResizeUpdates(newPod, oldPod *api.Pod) *api.Pod {
 	// restore the saved pod-level resource requests to the new pod's spec.
 	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodLevelResourcesVerticalScaling) {
 		newPod.Spec.Resources = newPodResources
+	}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingMemoryBackedVolumes) {
+		// If InPlacePodVerticalScalingMemoryBackedVolumes feature gate is enabled,
+		// restore the saved volume sizeLimits to the new pod's spec.
+		newPod.Spec.Volumes = dropNonResizeUpdatesForVolumes(newVolumes, oldPod.Spec.Volumes)
+	} else {
+		newPod.Spec.Volumes = oldPod.Spec.Volumes
 	}
 
 	newPod.Status = oldPod.Status
@@ -409,6 +421,32 @@ func dropNonResizeUpdatesForContainers(new, old []api.Container) []api.Container
 	}
 
 	return oldCopyWithMergedResources
+}
+
+func dropNonResizeUpdatesForVolumes(new, old []api.Volume) []api.Volume {
+	if len(new) == 0 {
+		return new
+	}
+
+	oldCopyWithMergedVolumes := make([]api.Volume, len(old))
+	for i := range old {
+		oldCopyWithMergedVolumes[i] = *old[i].DeepCopy()
+	}
+
+	for i, vol := range new {
+		if oldCopyWithMergedVolumes[i].Name != vol.Name {
+			// This is an attempt to reorder or rename a volume, which is not allowed.
+			// Allow validation to catch this error.
+			return new
+		}
+		if oldCopyWithMergedVolumes[i].EmptyDir != nil && oldCopyWithMergedVolumes[i].EmptyDir.Medium == api.StorageMediumMemory {
+			if vol.EmptyDir != nil {
+				oldCopyWithMergedVolumes[i].EmptyDir.SizeLimit = vol.EmptyDir.SizeLimit
+			}
+		}
+	}
+
+	return oldCopyWithMergedVolumes
 }
 
 func (podResizeStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {

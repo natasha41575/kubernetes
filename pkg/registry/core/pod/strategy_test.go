@@ -3664,7 +3664,8 @@ func TestPodResizePrepareForUpdate(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
-				features.InPlacePodVerticalScaling: true,
+				features.InPlacePodVerticalScaling:               true,
+				features.InPlacePodVerticalScalingMemoryBackedVolumes: true,
 			})
 			ctx := context.Background()
 			ResizeStrategy.PrepareForUpdate(ctx, tc.newPod, tc.oldPod)

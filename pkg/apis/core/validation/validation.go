@@ -4471,6 +4471,8 @@ type PodValidationOptions struct {
 	// Indicates whether InPlacePodLevelResourcesVerticalScaling feature is enabled
 	// or disabled.
 	InPlacePodLevelResourcesVerticalScalingEnabled bool
+	// Indicates whether InPlacePodVerticalScalingMemoryBackedVolumes feature is enabled or disabled.
+	InPlacePodVerticalScalingMemoryBackedVolumesEnabled bool
 	// Allow sidecar containers resize policy for backward compatibility
 	AllowSidecarResizePolicy bool
 	// Allow invalid label-value in RequiredNodeSelector
@@ -6330,7 +6332,16 @@ func ValidatePodResize(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 		allErrs = append(allErrs, field.Forbidden(specPath, "Pod running on node without support for resize"))
 	}
 
+<<<<<<< HEAD
 	// Part 2: Validate that changes between pod-level resources in oldPod.Spec.Resources and
+=======
+	// Part 2: Validate volume changes
+	if opts.InPlacePodVerticalScalingMemoryBackedVolumesEnabled {
+		allErrs = append(allErrs, validateVolumeResize(newPod, oldPod, specPath)...)
+	}
+
+	// Part 3: Validate that changes between pod-level resources in oldPod.Spec.Resources and
+>>>>>>> a5091edd6d9 (api and validation changes)
 	// newPod.Spec.Resources are allowed.
 
 	isPodLevelResourcesSet := func(pod *core.Pod) bool {
@@ -6445,9 +6456,15 @@ func ValidatePodResize(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 	}
 
 	if !apiequality.Semantic.DeepEqual(newPodSpecCopy, oldPod.Spec) {
+		// We need to ignore allowed volume changes here, which have already been validated above.
+		if opts.InPlacePodVerticalScalingMemoryBackedVolumesEnabled {
+			newPodSpecCopy.Volumes = oldPod.Spec.Volumes
+		}
 		// This likely means that the user has made changes to resources other than CPU and Memory.
-		errs := field.Forbidden(specPath, "only cpu and memory resources are mutable")
-		allErrs = append(allErrs, errs)
+		if !apiequality.Semantic.DeepEqual(newPodSpecCopy, oldPod.Spec) {	
+			errs := field.Forbidden(specPath, "only cpu and memory resources, and sizeLimit of memory-backed emptyDir volumes are mutable")
+			allErrs = append(allErrs, errs)
+		}
 	}
 	return allErrs
 }
