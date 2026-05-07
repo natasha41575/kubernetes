@@ -33,4 +33,5 @@ var AllFeatures = []types.Feature{
 	extendwebsocketstokubelet.Feature,
 	inplacepodresize.NonSidecarInitContainerResizeFeature,
 	usernamespaceshostnetwork.Feature,
+	inplacepodresize.MemoryBackedVolumeResizeFeature,
 }
