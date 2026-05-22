@@ -6311,6 +6311,48 @@ func ValidatePodResize(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 	allErrs := ValidateObjectMetaUpdate(&newPod.ObjectMeta, &oldPod.ObjectMeta, fldPath)
 	allErrs = append(allErrs, validatePodMetadataAndSpec(newPod, opts)...)
 
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingMemoryBackedVolumes) {
+		if len(newPod.Spec.Volumes) != len(oldPod.Spec.Volumes) {
+			allErrs = append(allErrs, field.Forbidden(field.NewPath("spec").Child("volumes"), "volumes may not be added or removed on resize"))
+		} else {
+			for i, newVol := range newPod.Spec.Volumes {
+				oldVol := oldPod.Spec.Volumes[i]
+				volPath := field.NewPath("spec").Child("volumes").Index(i)
+				if newVol.Name != oldVol.Name {
+					allErrs = append(allErrs, field.Forbidden(volPath.Child("name"), "volumes may not be renamed or reordered on resize"))
+					continue
+				}
+				// We need to compare everything except EmptyDir.SizeLimit
+				newVolCopy := newVol.DeepCopy()
+				oldVolCopy := oldVol.DeepCopy()
+				if newVolCopy.EmptyDir != nil && oldVolCopy.EmptyDir != nil {
+					newVolCopy.EmptyDir.SizeLimit = oldVolCopy.EmptyDir.SizeLimit
+				}
+				if !apiequality.Semantic.DeepEqual(newVolCopy, oldVolCopy) {
+					allErrs = append(allErrs, field.Forbidden(volPath, "only sizeLimit of memory-backed emptyDir volumes is mutable on resize"))
+					continue
+				}
+				// If it is emptyDir, check mutable constraints
+				if newVol.EmptyDir != nil && oldVol.EmptyDir != nil {
+					if (oldVol.EmptyDir.SizeLimit == nil && newVol.EmptyDir.SizeLimit != nil) ||
+						(oldVol.EmptyDir.SizeLimit != nil && newVol.EmptyDir.SizeLimit == nil) {
+						allErrs = append(allErrs, field.Forbidden(volPath.Child("emptyDir").Child("sizeLimit"), "adding or removing sizeLimit on an existing volume is not allowed"))
+					} else if oldVol.EmptyDir.SizeLimit != nil && newVol.EmptyDir.SizeLimit != nil {
+						if oldVol.EmptyDir.SizeLimit.Cmp(*newVol.EmptyDir.SizeLimit) != 0 {
+							if newVol.EmptyDir.Medium != core.StorageMediumMemory {
+								allErrs = append(allErrs, field.Forbidden(volPath.Child("emptyDir").Child("sizeLimit"), "sizeLimit is only mutable for memory-backed emptyDir volumes"))
+							}
+						}
+					}
+				}
+			}
+		}
+	} else {
+		if !apiequality.Semantic.DeepEqual(newPod.Spec.Volumes, oldPod.Spec.Volumes) {
+			allErrs = append(allErrs, field.Forbidden(field.NewPath("spec").Child("volumes"), "volumes are immutable on resize when InPlacePodVerticalScalingMemoryBackedVolumes feature gate is disabled"))
+		}
+	}
+
 	// static pods cannot be resized.
 	if _, ok := oldPod.Annotations[core.MirrorPodAnnotationKey]; ok {
 		return field.ErrorList{field.Forbidden(field.NewPath(""), "static pods cannot be resized")}
@@ -6443,6 +6485,10 @@ func ValidatePodResize(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 	if len(allErrs) > 0 {
 		return allErrs
 	}
+
+		if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingMemoryBackedVolumes) {
+	newPodSpecCopy.Volumes = oldPod.Spec.Volumes
+		}
 
 	if !apiequality.Semantic.DeepEqual(newPodSpecCopy, oldPod.Spec) {
 		// This likely means that the user has made changes to resources other than CPU and Memory.
