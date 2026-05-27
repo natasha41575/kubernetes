@@ -22698,20 +22698,20 @@ func TestValidateSecret(t *testing.T) {
 		secret core.Secret
 		valid  bool
 	}{
-		"valid":                                     {validSecret(), true},
-		"empty name":                                {emptyName, false},
-		"invalid name":                              {invalidName, false},
-		"empty namespace":                           {emptyNs, false},
-		"invalid namespace":                         {invalidNs, false},
-		"over max size":                             {overMaxSize, false},
-		"invalid key":                               {invalidKey, false},
-		"valid service-account-token secret":        {validServiceAccountTokenSecret(), true},
-		"empty service-account-token annotation":    {emptyTokenAnnotation, false},
+		"valid":                                  {validSecret(), true},
+		"empty name":                             {emptyName, false},
+		"invalid name":                           {invalidName, false},
+		"empty namespace":                        {emptyNs, false},
+		"invalid namespace":                      {invalidNs, false},
+		"over max size":                          {overMaxSize, false},
+		"invalid key":                            {invalidKey, false},
+		"valid service-account-token secret":     {validServiceAccountTokenSecret(), true},
+		"empty service-account-token annotation": {emptyTokenAnnotation, false},
 		"missing service-account-token annotation":  {missingTokenAnnotation, false},
 		"missing service-account-token annotations": {missingTokenAnnotations, false},
-		"leading dot key":                           {leadingDotKey, true},
-		"dot key":                                   {dotKey, false},
-		"double dot key":                            {doubleDotKey, false},
+		"leading dot key": {leadingDotKey, true},
+		"dot key":         {dotKey, false},
+		"double dot key":  {doubleDotKey, false},
 	}
 
 	for name, tc := range tests {
@@ -29375,7 +29375,7 @@ func TestValidatePodResize(t *testing.T) {
 				}
 			}),
 			enableMemoryBackedVolumesResize: false,
-			err: "spec.volumes: Forbidden: volumes are immutable on resize when InPlacePodVerticalScalingMemoryBackedVolumes feature gate is disabled",
+			err:                             "spec.volumes: Forbidden: volumes are immutable on resize when InPlacePodVerticalScalingMemoryBackedVolumes feature gate is disabled",
 		},
 		{
 			test: "valid emptyDir memory-backed sizeLimit mutation when FG enabled",
@@ -29406,7 +29406,7 @@ func TestValidatePodResize(t *testing.T) {
 				}
 			}),
 			enableMemoryBackedVolumesResize: true,
-			err: "",
+			err:                             "",
 		},
 		{
 			test: "invalid emptyDir default-medium sizeLimit mutation",
@@ -29437,7 +29437,7 @@ func TestValidatePodResize(t *testing.T) {
 				}
 			}),
 			enableMemoryBackedVolumesResize: true,
-			err: "spec.volumes[0].emptyDir.sizeLimit: Forbidden: sizeLimit is only mutable for memory-backed emptyDir volumes",
+			err:                             "spec.volumes[0].emptyDir.sizeLimit: Forbidden: sizeLimit is only mutable for memory-backed emptyDir volumes",
 		},
 		{
 			test: "invalid volume addition on resize",
@@ -29477,7 +29477,7 @@ func TestValidatePodResize(t *testing.T) {
 				}
 			}),
 			enableMemoryBackedVolumesResize: true,
-			err: "spec.volumes: Forbidden: volumes may not be added or removed on resize",
+			err:                             "spec.volumes: Forbidden: volumes may not be added or removed on resize",
 		},
 		{
 			test: "invalid volume removal on resize",
@@ -29498,7 +29498,7 @@ func TestValidatePodResize(t *testing.T) {
 				pod.Spec.Volumes = []core.Volume{}
 			}),
 			enableMemoryBackedVolumesResize: true,
-			err: "spec.volumes: Forbidden: volumes may not be added or removed on resize",
+			err:                             "spec.volumes: Forbidden: volumes may not be added or removed on resize",
 		},
 		{
 			test: "invalid volume rename on resize",
@@ -29529,7 +29529,7 @@ func TestValidatePodResize(t *testing.T) {
 				}
 			}),
 			enableMemoryBackedVolumesResize: true,
-			err: "spec.volumes[0].name: Forbidden: volumes may not be renamed or reordered on resize",
+			err:                             "spec.volumes[0].name: Forbidden: volumes may not be renamed or reordered on resize",
 		},
 		{
 			test: "invalid field mutation other than sizeLimit",
@@ -29560,7 +29560,7 @@ func TestValidatePodResize(t *testing.T) {
 				}
 			}),
 			enableMemoryBackedVolumesResize: true,
-			err: "spec.volumes[0]: Forbidden: only sizeLimit of memory-backed emptyDir volumes is mutable on resize",
+			err:                             "spec.volumes[0]: Forbidden: only sizeLimit of memory-backed emptyDir volumes is mutable on resize",
 		},
 		{
 			test: "invalid addition of sizeLimit on resize",
@@ -29591,7 +29591,7 @@ func TestValidatePodResize(t *testing.T) {
 				}
 			}),
 			enableMemoryBackedVolumesResize: true,
-			err: "spec.volumes[0].emptyDir.sizeLimit: Forbidden: adding or removing sizeLimit on an existing volume is not allowed",
+			err:                             "spec.volumes[0].emptyDir.sizeLimit: Forbidden: adding or removing sizeLimit on an existing volume is not allowed",
 		},
 		{
 			test: "invalid removal of sizeLimit on resize",
@@ -29622,7 +29622,7 @@ func TestValidatePodResize(t *testing.T) {
 				}
 			}),
 			enableMemoryBackedVolumesResize: true,
-			err: "spec.volumes[0].emptyDir.sizeLimit: Forbidden: adding or removing sizeLimit on an existing volume is not allowed",
+			err:                             "spec.volumes[0].emptyDir.sizeLimit: Forbidden: adding or removing sizeLimit on an existing volume is not allowed",
 		},
 	}
 
