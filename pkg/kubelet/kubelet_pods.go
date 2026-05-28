@@ -2368,6 +2368,56 @@ func (kl *Kubelet) convertToAPIContainerStatuses(ctx context.Context, pod *v1.Po
 			}
 		}
 
+		// Propagate volume size to status for memory-backed emptyDir volumes
+		if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingMemoryBackedVolumes) {
+			for _, vol := range pod.Spec.Volumes {
+				if vol.EmptyDir == nil || vol.EmptyDir.Medium != v1.StorageMediumMemory {
+					continue
+				}
+				size, err := kl.volumeManager.GetVolumeSize(pod, vol.Name)
+				if err != nil {
+					logger.Error(err, "error getting volume size", "volume", vol.Name)
+					continue
+				}
+				if size == nil {
+					logger.Error(nil, "volume size is nil", "volume", vol.Name)
+					continue
+				}
+
+				var vms *v1.VolumeMountStatus
+				for idx := range status.VolumeMounts {
+					if status.VolumeMounts[idx].Name == vol.Name {
+						vms = &status.VolumeMounts[idx]
+						break
+					}
+				}
+				if vms == nil {
+					if containerSpec := kubecontainer.GetContainerSpec(pod, cs.Name); containerSpec != nil {
+						for _, mount := range containerSpec.VolumeMounts {
+							if mount.Name == vol.Name {
+								status.VolumeMounts = append(status.VolumeMounts, v1.VolumeMountStatus{
+									Name:      mount.Name,
+									MountPath: mount.MountPath,
+									ReadOnly:  mount.ReadOnly,
+								})
+								vms = &status.VolumeMounts[len(status.VolumeMounts)-1]
+								break
+							}
+						}
+					}
+				}
+				if vms != nil {
+					if vms.VolumeStatus == nil {
+						vms.VolumeStatus = &v1.VolumeStatus{}
+					}
+					if vms.VolumeStatus.EmptyDir == nil {
+						vms.VolumeStatus.EmptyDir = &v1.EmptyDirVolumeStatus{}
+					}
+					vms.VolumeStatus.EmptyDir.SizeLimit = size
+				}
+			}
+		}
+
 		switch {
 		case cs.State == kubecontainer.ContainerStateRunning:
 			status.State.Running = &v1.ContainerStateRunning{StartedAt: metav1.NewTime(cs.StartedAt)}
