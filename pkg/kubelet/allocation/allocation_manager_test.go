@@ -2479,3 +2479,825 @@ func setContainerStatus(podStatus *kubecontainer.PodStatus, c *v1.Container, idx
 		},
 	}
 }
+
+func TestAllocationManager_EmptyDirVolumeLimits_AddPod(t *testing.T) {
+	tests := []struct {
+		name               string
+		featureGateEnabled bool
+		pod                *v1.Pod
+		expectedAllocated  bool
+		expectedLimit      *resource.Quantity
+	}{
+		{
+			name:               "admit memory-backed volume with size limit when gate is enabled",
+			featureGateEnabled: true,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:       "pod-1",
+					Name:      "test-pod-1",
+					Namespace: "default",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol-1",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI), // 128Mi
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedAllocated: true,
+			expectedLimit:     resource.NewQuantity(1024*1024*128, resource.BinarySI),
+		},
+		{
+			name:               "admit memory-backed volume with size limit when gate is disabled",
+			featureGateEnabled: false,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:       "pod-2",
+					Name:      "test-pod-2",
+					Namespace: "default",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol-2",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedAllocated: false,
+		},
+		{
+			name:               "admit volume with medium Default (not Memory) when gate is enabled",
+			featureGateEnabled: true,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:       "pod-3",
+					Name:      "test-pod-3",
+					Namespace: "default",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "default-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumDefault,
+									SizeLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedAllocated: false,
+		},
+		{
+			name:               "admit memory-backed volume with nil size limit when gate is enabled",
+			featureGateEnabled: true,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:       "pod-4",
+					Name:      "test-pod-4",
+					Namespace: "default",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol-nil-limit",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: nil,
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedAllocated: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingMemoryBackedVolumes, test.featureGateEnabled)
+
+			allocationManager := makeAllocationManager(t, &containertest.FakeRuntime{}, []*v1.Pod{test.pod}, nil)
+
+			// 1. Admit the Pod
+			ok, reason, message := allocationManager.AddPod([]*v1.Pod{test.pod}, test.pod)
+			require.True(t, ok, "admit should succeed: reason=%s, msg=%s", reason, message)
+
+			// 2. Verify state memory has the correct emptyDir allocation
+			memoryStore := allocationManager.(*manager).allocated
+
+			var volName string
+			if len(test.pod.Spec.Volumes) > 0 {
+				volName = test.pod.Spec.Volumes[0].Name
+			}
+			limit, exists := memoryStore.GetEmptyDirVolumeLimit(test.pod.UID, volName)
+
+			if test.expectedAllocated {
+				require.True(t, exists, "emptyDir limit allocation should exist")
+				require.NotNil(t, limit)
+				assert.True(t, test.expectedLimit.Equal(*limit))
+			} else {
+				assert.False(t, exists, "emptyDir limit allocation should not exist")
+				assert.Nil(t, limit)
+			}
+		})
+	}
+}
+
+func TestAllocationManager_EmptyDirVolumeLimits_UpdatePodFromAllocation(t *testing.T) {
+	tests := []struct {
+		name               string
+		featureGateEnabled bool
+		pod                *v1.Pod
+		checkpointLimit    *resource.Quantity
+		expectedUpdated    bool
+		expectedLimit      *resource.Quantity
+	}{
+		{
+			name:               "apply checkpoint limit to spec mismatch when gate is enabled",
+			featureGateEnabled: true,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:       "pod-1",
+					Name:      "mismatch-pod-1",
+					Namespace: "default",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*64, resource.BinarySI), // 64Mi in spec
+								},
+							},
+						},
+					},
+				},
+			},
+			checkpointLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI), // 128Mi
+			expectedUpdated: true,
+			expectedLimit:   resource.NewQuantity(1024*1024*128, resource.BinarySI),
+		},
+		{
+			name:               "don't apply checkpoint limit to spec mismatch when gate is disabled",
+			featureGateEnabled: false,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:       "pod-2",
+					Name:      "mismatch-pod-2",
+					Namespace: "default",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*64, resource.BinarySI), // 64Mi in spec
+								},
+							},
+						},
+					},
+				},
+			},
+			checkpointLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI),
+			expectedUpdated: false,
+			expectedLimit:   resource.NewQuantity(1024*1024*64, resource.BinarySI),
+		},
+		{
+			name:               "spec already matches checkpoint limits when gate is enabled",
+			featureGateEnabled: true,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:       "pod-3",
+					Name:      "mismatch-pod-3",
+					Namespace: "default",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI), // 128Mi
+								},
+							},
+						},
+					},
+				},
+			},
+			checkpointLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI),
+			expectedUpdated: false,
+			expectedLimit:   resource.NewQuantity(1024*1024*128, resource.BinarySI),
+		},
+		{
+			name:               "non-memory volume type mismatch when gate is enabled",
+			featureGateEnabled: true,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:       "pod-4",
+					Name:      "mismatch-pod-4",
+					Namespace: "default",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "default-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumDefault,
+									SizeLimit: resource.NewQuantity(1024*1024*64, resource.BinarySI), // 64Mi
+								},
+							},
+						},
+					},
+				},
+			},
+			checkpointLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI),
+			expectedUpdated: false,
+			expectedLimit:   resource.NewQuantity(1024*1024*64, resource.BinarySI),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingMemoryBackedVolumes, test.featureGateEnabled)
+
+			allocationManager := makeAllocationManager(t, &containertest.FakeRuntime{}, []*v1.Pod{test.pod}, nil)
+
+			// Pre-populate the local cache with the checkpoint limit
+			err := allocationManager.(*manager).allocated.SetEmptyDirVolumeLimit(test.pod.UID, "mem-vol", test.checkpointLimit)
+			require.NoError(t, err)
+
+			// Actuate UpdatePodFromAllocation and check outcomes
+			allocatedPod, updated := allocationManager.UpdatePodFromAllocation(test.pod)
+			require.Equal(t, test.expectedUpdated, updated)
+
+			if test.expectedUpdated {
+				assert.NotSame(t, test.pod, allocatedPod)
+			} else {
+				assert.Same(t, test.pod, allocatedPod)
+			}
+
+			if len(allocatedPod.Spec.Volumes) > 0 {
+				vol := allocatedPod.Spec.Volumes[0]
+				if vol.EmptyDir.SizeLimit != nil {
+					assert.True(t, test.expectedLimit.Equal(*vol.EmptyDir.SizeLimit))
+				} else {
+					assert.Nil(t, test.expectedLimit)
+				}
+			}
+		})
+	}
+}
+
+func TestAllocationManager_EmptyDirVolumeLimits_RetryPendingResizes(t *testing.T) {
+	tests := []struct {
+		name                     string
+		isGateEnabled            bool
+		pod                      *v1.Pod
+		targetPod                *v1.Pod
+		expectResizeAllocated    bool
+		expectedAllocatedLimit   *resource.Quantity
+		expectedResizeConditions []*v1.PodCondition
+	}{
+		{
+			name:          "successfully scale up emptyDir limit when gate is enabled",
+			isGateEnabled: true,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:        "pod-1",
+					Name:       "resize-pod-1",
+					Namespace:  "default",
+					Generation: 1,
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI), // 128Mi
+								},
+							},
+						},
+					},
+				},
+			},
+			targetPod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:        "pod-1",
+					Name:       "resize-pod-1",
+					Namespace:  "default",
+					Generation: 2,
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*256, resource.BinarySI), // Scaled to 256Mi
+								},
+							},
+						},
+					},
+				},
+			},
+			expectResizeAllocated:  true,
+			expectedAllocatedLimit: resource.NewQuantity(1024*1024*256, resource.BinarySI),
+			expectedResizeConditions: []*v1.PodCondition{
+				{
+					Type:   v1.PodResizeInProgress,
+					Status: "True",
+				},
+			},
+		},
+		{
+			name:          "successfully scale down emptyDir limit when gate is enabled",
+			isGateEnabled: true,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:        "pod-2",
+					Name:       "resize-pod-2",
+					Namespace:  "default",
+					Generation: 1,
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI),
+								},
+							},
+						},
+					},
+				},
+			},
+			targetPod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:        "pod-2",
+					Name:       "resize-pod-2",
+					Namespace:  "default",
+					Generation: 2,
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*64, resource.BinarySI), // Scaled down to 64Mi
+								},
+							},
+						},
+					},
+				},
+			},
+			expectResizeAllocated:  true,
+			expectedAllocatedLimit: resource.NewQuantity(1024*1024*64, resource.BinarySI),
+			expectedResizeConditions: []*v1.PodCondition{
+				{
+					Type:   v1.PodResizeInProgress,
+					Status: "True",
+				},
+			},
+		},
+		{
+			name:          "resize request ignored when gate is disabled",
+			isGateEnabled: false,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:        "pod-3",
+					Name:       "resize-pod-3",
+					Namespace:  "default",
+					Generation: 1,
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI),
+								},
+							},
+						},
+					},
+				},
+			},
+			targetPod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:        "pod-3",
+					Name:       "resize-pod-3",
+					Namespace:  "default",
+					Generation: 2,
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*256, resource.BinarySI),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectResizeAllocated:  false,
+			expectedAllocatedLimit: nil,
+			expectedResizeConditions: nil,
+		},
+		{
+			name:          "no-op resize request (target limit same as current allocation)",
+			isGateEnabled: true,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:        "pod-4",
+					Name:       "resize-pod-4",
+					Namespace:  "default",
+					Generation: 1,
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI),
+								},
+							},
+						},
+					},
+				},
+			},
+			targetPod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:        "pod-4",
+					Name:       "resize-pod-4",
+					Namespace:  "default",
+					Generation: 2,
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("100m"),
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectResizeAllocated:  false,
+			expectedAllocatedLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI),
+			expectedResizeConditions: nil,
+		},
+		{
+			name:          "scale up emptyDir limit combined with out-of-resources CPU resize (expect Deferred)",
+			isGateEnabled: true,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:        "pod-5",
+					Name:       "resize-pod-5",
+					Namespace:  "default",
+					Generation: 1,
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("1"), // 1 CPU
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI), // 128Mi
+								},
+							},
+						},
+					},
+				},
+			},
+			targetPod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:        "pod-5",
+					Name:       "resize-pod-5",
+					Namespace:  "default",
+					Generation: 2,
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container-1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU:    resource.MustParse("5"), // 5 CPU: exceeds Node Allocatable CPU 4!
+									v1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "mem-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									Medium:    v1.StorageMediumMemory,
+									SizeLimit: resource.NewQuantity(1024*1024*256, resource.BinarySI), // 256Mi target
+								},
+							},
+						},
+					},
+				},
+			},
+			expectResizeAllocated:  false,
+			expectedAllocatedLimit: resource.NewQuantity(1024*1024*128, resource.BinarySI), // Stays at 128Mi
+			expectedResizeConditions: []*v1.PodCondition{
+				{
+					Type:   v1.PodResizePending,
+					Status: "True",
+					Reason: "Deferred",
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingMemoryBackedVolumes, test.isGateEnabled)
+
+			allocationManager := makeAllocationManager(t, &containertest.FakeRuntime{}, []*v1.Pod{test.pod}, nil)
+
+			// Set the initial checkpoints
+			logger, _ := ktesting.NewTestContext(t)
+			err := allocationManager.SetAllocatedResources(test.pod)
+			require.NoError(t, err)
+
+			// Setup getPodByUID mock to return targetPod
+			allocationManager.(*manager).getPodByUID = func(uid types.UID) (*v1.Pod, bool) {
+				if uid == test.pod.UID {
+					return test.targetPod, true
+				}
+				return nil, false
+			}
+
+			// Actuate
+			resizeAllocated, err := allocationManager.(*manager).handlePodResourcesResize(logger, test.targetPod)
+			require.NoError(t, err)
+			assert.Equal(t, test.expectResizeAllocated, resizeAllocated)
+
+			// Verify the final checkpoint allocation
+			limit, exists := allocationManager.(*manager).allocated.GetEmptyDirVolumeLimit(test.pod.UID, "mem-vol")
+
+			if test.expectedAllocatedLimit != nil {
+				require.True(t, exists)
+				assert.True(t, test.expectedAllocatedLimit.Equal(*limit))
+			} else {
+				assert.False(t, exists)
+			}
+
+			// Verify status manager conditions
+			actualConditions := allocationManager.(*manager).statusManager.GetPodResizeConditions(test.pod.UID)
+			require.Equal(t, len(test.expectedResizeConditions), len(actualConditions), "different number of resize conditions")
+			for _, expectedCond := range test.expectedResizeConditions {
+				found := false
+				for _, actualCond := range actualConditions {
+					if actualCond.Type == expectedCond.Type {
+						assert.Equal(t, expectedCond.Status, actualCond.Status, "condition status mismatch")
+						if expectedCond.Reason != "" {
+							assert.Equal(t, expectedCond.Reason, actualCond.Reason, "condition reason mismatch")
+						}
+						found = true
+						break
+					}
+				}
+				assert.True(t, found, "Expected condition %s not found", expectedCond.Type)
+			}
+		})
+	}
+}

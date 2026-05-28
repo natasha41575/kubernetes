@@ -25,6 +25,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -439,14 +440,18 @@ func updatePodFromAllocation(pod *v1.Pod, allocated state.PodResourceInfo) (*v1.
 
 	updated := false
 	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodLevelResourcesVerticalScaling) {
-		pAlloc := allocated.PodLevelResources
-		if !apiequality.Semantic.DeepEqual(pod.Spec.Resources, pAlloc) {
-			// Allocation differs from pod spec, retrieve the allocation
-			pod = pod.DeepCopy()
-			pod.Spec.Resources = pAlloc
-			updated = true
-		}
+		pod, updated = updatePodLevelResourcesFromAllocation(pod, allocated)
 	}
+	pod, updated = updateContainerResourcesFromAllocation(pod, allocated, updated)
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingMemoryBackedVolumes){
+		pod, updated = updateEmptyDirVolumeLimitsFromAllocation(pod, allocated, updated)
+	}
+
+	return pod, updated
+}
+
+func updateContainerResourcesFromAllocation(pod *v1.Pod, allocated state.PodResourceInfo, alreadyUpdated bool) (*v1.Pod, bool) {
+	updated := alreadyUpdated
 	containerAlloc := func(c v1.Container) (v1.ResourceRequirements, bool) {
 		if cAlloc, ok := allocated.ContainerResources[c.Name]; ok {
 			if !apiequality.Semantic.DeepEqual(c.Resources, cAlloc) {
@@ -477,6 +482,36 @@ func updatePodFromAllocation(pod *v1.Pod, allocated state.PodResourceInfo) (*v1.
 	return pod, updated
 }
 
+func updatePodLevelResourcesFromAllocation(pod *v1.Pod, allocated state.PodResourceInfo) (*v1.Pod, bool) {
+	pAlloc := allocated.PodLevelResources
+	if !apiequality.Semantic.DeepEqual(pod.Spec.Resources, pAlloc) {
+		// Allocation differs from pod spec, retrieve the allocation
+		pod = pod.DeepCopy()
+		pod.Spec.Resources = pAlloc
+		return pod, true
+	}
+	return pod, false
+}
+
+func updateEmptyDirVolumeLimitsFromAllocation(pod *v1.Pod, allocated state.PodResourceInfo, alreadyUpdated bool) (*v1.Pod, bool) {
+	updated := alreadyUpdated
+	for i, volume := range pod.Spec.Volumes {
+		if volume.EmptyDir != nil && volume.EmptyDir.Medium == v1.StorageMediumMemory {
+			if alloc, ok := allocated.EmptyDirVolumeLimits[volume.Name]; ok {
+				if volume.EmptyDir.SizeLimit == nil || alloc.Cmp(*volume.EmptyDir.SizeLimit) != 0 {
+					if !updated {
+						pod = pod.DeepCopy()
+						updated = true
+					}
+					allocCopy := alloc.DeepCopy()
+					pod.Spec.Volumes[i].EmptyDir.SizeLimit = &allocCopy
+				}
+			}
+		}
+	}
+	return pod, updated
+}
+
 // SetAllocatedResources checkpoints the resources allocated to a pod's containers
 func (m *manager) SetAllocatedResources(pod *v1.Pod) error {
 	// Use klog.TODO() because we currently do not have a proper logger to pass in.
@@ -497,6 +532,18 @@ func allocationFromPod(pod *v1.Pod) state.PodResourceInfo {
 		}
 		alloc := *container.Resources.DeepCopy()
 		podAlloc.ContainerResources[container.Name] = alloc
+	}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingMemoryBackedVolumes) {
+		for _, volume := range pod.Spec.Volumes {
+			if volume.EmptyDir != nil && volume.EmptyDir.Medium == v1.StorageMediumMemory && volume.EmptyDir.SizeLimit != nil {
+				alloc := volume.EmptyDir.SizeLimit.DeepCopy()
+				if podAlloc.EmptyDirVolumeLimits == nil {
+					podAlloc.EmptyDirVolumeLimits = make(map[string]*resource.Quantity)
+				}
+				podAlloc.EmptyDirVolumeLimits[volume.Name] = &alloc
+			}
+		}
 	}
 
 	return podAlloc
