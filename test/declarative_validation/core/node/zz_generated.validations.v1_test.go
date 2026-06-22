@@ -30,6 +30,13 @@ func init() {
 	coverage.RegisterDeclaredRules(
 		schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Node"},
 		coverage.FieldRules{
+			"spec.podPreemptionPolicy.disableResizePreemption": {
+				{ErrorType: "FieldValueTooMany", Origin: "maxItems"},
+			},
+			"spec.podPreemptionPolicy.disableResizePreemption[*]": {
+				{ErrorType: "FieldValueDuplicate"},
+				{ErrorType: "FieldValueInvalid", Origin: "format=k8s-label-key"},
+			},
 			"spec.providerID": {
 				{ErrorType: "FieldValueInvalid", Origin: "update"},
 			},
