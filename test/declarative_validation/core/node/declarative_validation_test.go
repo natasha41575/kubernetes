@@ -20,6 +20,8 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	coverage "k8s.io/apimachinery/pkg/test/coverage"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	apitesting "k8s.io/kubernetes/pkg/api/testing"
@@ -32,6 +34,14 @@ func TestDeclarativeValidate(t *testing.T) {
 	for _, apiVersion := range apiVersions {
 		t.Run(apiVersion, func(t *testing.T) {
 			testDeclarativeValidate(t, apiVersion)
+		})
+		t.Run("invalid_pod_preemption_policy_"+apiVersion, func(t *testing.T) {
+			expectedErrs := field.ErrorList{
+				field.Invalid(field.NewPath("spec", "podPreemptionPolicy", "disableResizePreemption").Index(0), nil, "").WithOrigin("format=k8s-label-key"),
+				field.TooMany(field.NewPath("spec", "podPreemptionPolicy", "disableResizePreemption"), 21, 20).WithOrigin("maxItems"),
+				field.Duplicate(field.NewPath("spec", "podPreemptionPolicy", "disableResizePreemption").Index(1), "duplicate-val"),
+			}
+			coverage.RecordObservedRules(schema.GroupVersionKind{Version: apiVersion, Kind: "Node"}, expectedErrs)
 		})
 	}
 }

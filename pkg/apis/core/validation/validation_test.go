@@ -31014,7 +31014,6 @@ func TestValidatePodSchedulingGroup(t *testing.T) {
 		}
 	}
 }
-
 func TestValidatePodBinding(t *testing.T) {
 	testCases := []struct {
 		name        string
@@ -31147,6 +31146,195 @@ func TestValidatePodBinding(t *testing.T) {
 				if len(errs) != 0 {
 					t.Errorf("Expected no error but got %v", errs)
 				}
+			}
+		})
+	}
+}
+
+func TestValidateNodePreemptionPolicy(t *testing.T) {
+	nodeWithPolicy := &core.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "abc",
+			ResourceVersion: "1",
+		},
+		Spec: core.NodeSpec{
+			PodPreemptionPolicy: &core.NodePodPreemptionPolicy{
+				DisableResizePreemption: []string{"o1"},
+			},
+		},
+	}
+	nodeWithoutPolicy := &core.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "abc",
+			ResourceVersion: "1",
+		},
+		Spec: core.NodeSpec{},
+	}
+	nodeWithMutatedPolicy := &core.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "abc",
+			ResourceVersion: "1",
+		},
+		Spec: core.NodeSpec{
+			PodPreemptionPolicy: &core.NodePodPreemptionPolicy{
+				DisableResizePreemption: []string{"o2"},
+			},
+		},
+	}
+	nodeWithEmptySlice := &core.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "abc",
+			ResourceVersion: "1",
+		},
+		Spec: core.NodeSpec{
+			PodPreemptionPolicy: &core.NodePodPreemptionPolicy{
+				DisableResizePreemption: []string{},
+			},
+		},
+	}
+
+	var tooManyItems []string
+	for i := range 21 {
+		tooManyItems = append(tooManyItems, fmt.Sprintf("policy-%d", i))
+	}
+	nodeWithTooMany := &core.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "abc", ResourceVersion: "1"},
+		Spec: core.NodeSpec{
+			PodPreemptionPolicy: &core.NodePodPreemptionPolicy{DisableResizePreemption: tooManyItems},
+		},
+	}
+	nodeWithDuplicates := &core.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "abc", ResourceVersion: "1"},
+		Spec: core.NodeSpec{
+			PodPreemptionPolicy: &core.NodePodPreemptionPolicy{DisableResizePreemption: []string{"o1", "o1"}},
+		},
+	}
+	nodeWithInvalidLabelKey := &core.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "abc", ResourceVersion: "1"},
+		Spec: core.NodeSpec{
+			PodPreemptionPolicy: &core.NodePodPreemptionPolicy{DisableResizePreemption: []string{"-invalid-policy"}},
+		},
+	}
+
+	tests := []struct {
+		name      string
+		fgEnabled bool
+		validate  func() field.ErrorList
+		expectErr field.ErrorList
+	}{
+		{
+			name:      "create, feature gate disabled",
+			fgEnabled: false,
+			validate:  func() field.ErrorList { return ValidateNode(nodeWithPolicy) },
+			expectErr: field.ErrorList{field.Forbidden(field.NewPath("spec", "podPreemptionPolicy"), "disabled when InPlacePodVerticalScalingSchedulerPreemption feature gate is disabled")},
+		},
+		{
+			name:      "create, feature gate enabled",
+			fgEnabled: true,
+			validate:  func() field.ErrorList { return ValidateNode(nodeWithPolicy) },
+		},
+		{
+			name:      "update adding policy, feature gate disabled",
+			fgEnabled: false,
+			validate:  func() field.ErrorList { return ValidateNodeUpdate(nodeWithPolicy, nodeWithoutPolicy) },
+			expectErr: field.ErrorList{field.Forbidden(field.NewPath("spec", "podPreemptionPolicy"), "update is forbidden when InPlacePodVerticalScalingSchedulerPreemption feature gate is disabled")},
+		},
+		{
+			name:      "update removing policy, feature gate disabled",
+			fgEnabled: false,
+			validate:  func() field.ErrorList { return ValidateNodeUpdate(nodeWithoutPolicy, nodeWithPolicy) },
+			expectErr: field.ErrorList{field.Forbidden(field.NewPath("spec", "podPreemptionPolicy"), "update is forbidden when InPlacePodVerticalScalingSchedulerPreemption feature gate is disabled")},
+		},
+		{
+			name:      "update mutating policy, feature gate disabled",
+			fgEnabled: false,
+			validate:  func() field.ErrorList { return ValidateNodeUpdate(nodeWithMutatedPolicy, nodeWithPolicy) },
+			expectErr: field.ErrorList{field.Forbidden(field.NewPath("spec", "podPreemptionPolicy"), "update is forbidden when InPlacePodVerticalScalingSchedulerPreemption feature gate is disabled")},
+		},
+		{
+			name:      "update unchanged policy, feature gate disabled",
+			fgEnabled: false,
+			validate:  func() field.ErrorList { return ValidateNodeUpdate(nodeWithPolicy, nodeWithPolicy) },
+		},
+		{
+			name:      "update unchanged policy create validation with options, feature gate disabled",
+			fgEnabled: false,
+			validate: func() field.ErrorList {
+				opts := ValidationOptionsForNode(nodeWithPolicy, nodeWithPolicy)
+				return ValidateNodeWithOptions(nodeWithPolicy, opts)
+			},
+		},
+		{
+			name:      "update unchanged policy with empty slice create validation with options, feature gate disabled",
+			fgEnabled: false,
+			validate: func() field.ErrorList {
+				opts := ValidationOptionsForNode(nodeWithEmptySlice, nodeWithEmptySlice)
+				return ValidateNodeWithOptions(nodeWithEmptySlice, opts)
+			},
+		},
+		{
+			name:      "update, feature gate enabled",
+			fgEnabled: true,
+			validate:  func() field.ErrorList { return ValidateNodeUpdate(nodeWithPolicy, nodeWithoutPolicy) },
+		},
+		{
+			name:      "create with too many items",
+			fgEnabled: true,
+			validate:  func() field.ErrorList { return ValidateNode(nodeWithTooMany) },
+			expectErr: field.ErrorList{field.TooMany(field.NewPath("spec", "podPreemptionPolicy", "disableResizePreemption"), 21, 20)},
+		},
+		{
+			name:      "create with duplicate items",
+			fgEnabled: true,
+			validate:  func() field.ErrorList { return ValidateNode(nodeWithDuplicates) },
+			expectErr: field.ErrorList{field.Duplicate(field.NewPath("spec", "podPreemptionPolicy", "disableResizePreemption").Index(1), "o1")},
+		},
+		{
+			name:      "create with invalid label key",
+			fgEnabled: true,
+			validate:  func() field.ErrorList { return ValidateNode(nodeWithInvalidLabelKey) },
+			expectErr: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "podPreemptionPolicy", "disableResizePreemption").Index(0), "-invalid-policy", "name part must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character (e.g. 'MyName',  or 'my.name',  or '123-abc', regex used for validation is '([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]')"),
+			},
+		},
+		{
+			name:      "update with too many items",
+			fgEnabled: true,
+			validate: func() field.ErrorList {
+				opts := ValidationOptionsForNode(nodeWithTooMany, nodeWithoutPolicy)
+				return ValidateNodeWithOptions(nodeWithTooMany, opts)
+			},
+			expectErr: field.ErrorList{field.TooMany(field.NewPath("spec", "podPreemptionPolicy", "disableResizePreemption"), 21, 20)},
+		},
+		{
+			name:      "update with duplicate items",
+			fgEnabled: true,
+			validate: func() field.ErrorList {
+				opts := ValidationOptionsForNode(nodeWithDuplicates, nodeWithoutPolicy)
+				return ValidateNodeWithOptions(nodeWithDuplicates, opts)
+			},
+			expectErr: field.ErrorList{field.Duplicate(field.NewPath("spec", "podPreemptionPolicy", "disableResizePreemption").Index(1), "o1")},
+		},
+		{
+			name:      "update with invalid label key",
+			fgEnabled: true,
+			validate: func() field.ErrorList {
+				opts := ValidationOptionsForNode(nodeWithInvalidLabelKey, nodeWithoutPolicy)
+				return ValidateNodeWithOptions(nodeWithInvalidLabelKey, opts)
+			},
+			expectErr: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "podPreemptionPolicy", "disableResizePreemption").Index(0), "-invalid-policy", "name part must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character (e.g. 'MyName',  or 'my.name',  or '123-abc', regex used for validation is '([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]')"),
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingSchedulerPreemption, tc.fgEnabled)
+			errs := tc.validate()
+
+			if diff := cmp.Diff(tc.expectErr, errs, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("unexpected errors (-want, +got):\n%s", diff)
 			}
 		})
 	}

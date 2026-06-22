@@ -7312,14 +7312,62 @@ func validateNodeDeclaredFeatures(nodeFeatures []string, fldPath *field.Path) fi
 	return allErrs
 }
 
+type NodeValidationOptions struct {
+	// EnableInPlacePodVerticalScalingSchedulerPreemption indicates whether the feature gate is enabled or if existing usage should be permitted.
+	EnableInPlacePodVerticalScalingSchedulerPreemption bool
+}
+
+func ValidationOptionsForNode(node, oldNode *core.Node) NodeValidationOptions {
+	opts := NodeValidationOptions{
+		EnableInPlacePodVerticalScalingSchedulerPreemption: utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingSchedulerPreemption),
+	}
+	if oldNode != nil && oldNode.Spec.PodPreemptionPolicy != nil {
+		opts.EnableInPlacePodVerticalScalingSchedulerPreemption = true
+	}
+	return opts
+}
+
+func validateNodePodPreemptionPolicy(policy *core.NodePodPreemptionPolicy, opts NodeValidationOptions, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if policy == nil {
+		return allErrs
+	}
+	if !opts.EnableInPlacePodVerticalScalingSchedulerPreemption {
+		allErrs = append(allErrs, field.Forbidden(fldPath, "disabled when InPlacePodVerticalScalingSchedulerPreemption feature gate is disabled"))
+		return allErrs
+	}
+	disableResizePath := fldPath.Child("disableResizePreemption")
+	if len(policy.DisableResizePreemption) > 20 {
+		allErrs = append(allErrs, field.TooMany(disableResizePath, len(policy.DisableResizePreemption), 20))
+	}
+	seen := sets.New[string]()
+	for i, val := range policy.DisableResizePreemption {
+		idxPath := disableResizePath.Index(i)
+		if seen.Has(val) {
+			allErrs = append(allErrs, field.Duplicate(idxPath, val))
+		}
+		seen.Insert(val)
+		for _, msg := range validation.IsQualifiedName(val) {
+			allErrs = append(allErrs, field.Invalid(idxPath, val, msg))
+		}
+	}
+	return allErrs
+}
+
 // ValidateNode tests if required fields in the node are set.
 func ValidateNode(node *core.Node) field.ErrorList {
+	return ValidateNodeWithOptions(node, ValidationOptionsForNode(node, nil))
+}
+
+// ValidateNodeWithOptions tests if required fields in the node are set, taking validation options into account.
+func ValidateNodeWithOptions(node *core.Node, opts NodeValidationOptions) field.ErrorList {
 	fldPath := field.NewPath("metadata")
 	allErrs := ValidateObjectMeta(&node.ObjectMeta, false, ValidateNodeName, fldPath)
 	allErrs = append(allErrs, ValidateNodeSpecificAnnotations(node.ObjectMeta.Annotations, fldPath.Child("annotations"))...)
 	if len(node.Spec.Taints) > 0 {
 		allErrs = append(allErrs, validateNodeTaints(node.Spec.Taints, fldPath.Child("taints"))...)
 	}
+	allErrs = append(allErrs, validateNodePodPreemptionPolicy(node.Spec.PodPreemptionPolicy, opts, field.NewPath("spec", "podPreemptionPolicy"))...)
 
 	// Only validate spec.
 	// All status fields are optional and can be updated later.
@@ -7386,6 +7434,13 @@ func ValidateNodeUpdate(node, oldNode *core.Node) field.ErrorList {
 	// TODO: dedup the validation checks in ValidateNode() and ValidateNodeUpdate() since both these functions get called during node update.
 	statusField := field.NewPath("status")
 	allErrs = append(allErrs, validateNodeDeclaredFeatures(node.Status.DeclaredFeatures, statusField.Child("declaredFeatures"))...)
+
+	// Validate PodPreemptionPolicy update is forbidden when InPlacePodVerticalScalingSchedulerPreemption feature gate is disabled.
+	if !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingSchedulerPreemption) {
+		if !apiequality.Semantic.DeepEqual(oldNode.Spec.PodPreemptionPolicy, node.Spec.PodPreemptionPolicy) {
+			allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "podPreemptionPolicy"), "update is forbidden when InPlacePodVerticalScalingSchedulerPreemption feature gate is disabled"))
+		}
+	}
 
 	// Validate no duplicate addresses in node status.
 	addresses := make(map[core.NodeAddress]bool)
