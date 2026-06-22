@@ -41,6 +41,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	"k8s.io/kubernetes/pkg/kubelet/status"
+	kubeletutil "k8s.io/kubernetes/pkg/kubelet/util"
 )
 
 // podStatusManagerStateFile is the file name where status manager stores its state
@@ -107,17 +108,23 @@ type Manager interface {
 	RetryPendingResizes(ctx context.Context, trigger string)
 }
 
+// AllocationHelper provides callbacks to the Kubelet for pod and node operations needed during allocation.
+type AllocationHelper interface {
+	SyncPodNow(context.Context, *v1.Pod)
+	GetActivePods() []*v1.Pod
+	GetPodByUID(types.UID) (*v1.Pod, bool)
+	GetNode(context.Context) (*v1.Node, error)
+}
+
 type manager struct {
+	AllocationHelper
 	allocated state.State
 
 	admitHandlers lifecycle.PodAdmitHandlers
 	statusManager status.Manager
 	sourcesReady  config.SourcesReady
 
-	ticker         *time.Ticker
-	triggerPodSync func(context.Context, *v1.Pod)
-	getActivePods  func() []*v1.Pod
-	getPodByUID    func(types.UID) (*v1.Pod, bool)
+	ticker *time.Ticker
 
 	allocationMutex        sync.Mutex
 	podsWithPendingResizes []types.UID
@@ -127,25 +134,21 @@ type manager struct {
 
 func NewManager(checkpointDirectory string,
 	statusManager status.Manager,
-	triggerPodSync func(context.Context, *v1.Pod),
-	getActivePods func() []*v1.Pod,
-	getPodByUID func(types.UID) (*v1.Pod, bool),
+	helper AllocationHelper,
 	sourcesReady config.SourcesReady,
 	recorder record.EventRecorderLogger,
 	logger klog.Logger,
 ) Manager {
 	return &manager{
-		allocated: newStateImpl(logger, checkpointDirectory, allocatedPodsStateFile),
+		AllocationHelper: helper,
+		allocated:        newStateImpl(logger, checkpointDirectory, allocatedPodsStateFile),
 
 		statusManager: statusManager,
 		admitHandlers: lifecycle.PodAdmitHandlers{},
 		sourcesReady:  sourcesReady,
 
-		ticker:         time.NewTicker(initialRetryDelay),
-		triggerPodSync: triggerPodSync,
-		getActivePods:  getActivePods,
-		getPodByUID:    getPodByUID,
-		recorder:       recorder,
+		ticker:   time.NewTicker(initialRetryDelay),
+		recorder: recorder,
 	}
 }
 
@@ -170,25 +173,28 @@ func newStateImpl(logger klog.Logger, checkpointDirectory, checkpointName string
 func NewInMemoryManager(
 	logger klog.Logger,
 	statusManager status.Manager,
-	triggerPodSync func(context.Context, *v1.Pod),
-	getActivePods func() []*v1.Pod,
-	getPodByUID func(types.UID) (*v1.Pod, bool),
+	helper AllocationHelper,
 	sourcesReady config.SourcesReady,
 	recorder record.EventRecorderLogger,
 ) Manager {
 	return &manager{
-		allocated: state.NewStateMemory(logger, nil),
+		AllocationHelper: helper,
+		allocated:        state.NewStateMemory(logger, nil),
 
 		statusManager: statusManager,
 		admitHandlers: lifecycle.PodAdmitHandlers{},
 		sourcesReady:  sourcesReady,
 
-		ticker:         time.NewTicker(initialRetryDelay),
-		triggerPodSync: triggerPodSync,
-		getActivePods:  getActivePods,
-		getPodByUID:    getPodByUID,
-		recorder:       recorder,
+		ticker:   time.NewTicker(initialRetryDelay),
+		recorder: recorder,
 	}
+}
+
+func (m *manager) isResizePreemptionDisabled() bool {
+	if node, err := m.GetNode(context.TODO()); err == nil && node != nil {
+		return kubeletutil.IsNodeResizePreemptionDisabled(node)
+	}
+	return false
 }
 
 func (m *manager) Run(ctx context.Context) {
@@ -232,7 +238,7 @@ func (m *manager) retryPendingResizes(ctx context.Context, trigger string) []*v1
 
 	// Retry all pending resizes.
 	for _, uid := range m.podsWithPendingResizes {
-		pod, found := m.getPodByUID(uid)
+		pod, found := m.GetPodByUID(uid)
 		if !found {
 			logger.V(4).Info("Pod not found; removing from pending resizes", "podUID", uid)
 			continue
@@ -262,7 +268,7 @@ func (m *manager) retryPendingResizes(ctx context.Context, trigger string) []*v1
 		// If the pod resize status has changed, we need to update the pod status.
 		newResizeStatus := m.statusManager.GetPodResizeConditions(uid)
 		if resizeAllocated || !apiequality.Semantic.DeepEqual(oldResizeStatus, newResizeStatus) {
-			m.triggerPodSync(ctx, pod)
+			m.SyncPodNow(ctx, pod)
 		}
 	}
 
@@ -294,7 +300,7 @@ func (m *manager) PushPendingResize(logger klog.Logger, uid types.UID) {
 func (m *manager) sortPendingResizes(logger klog.Logger) {
 	var pendingPods []*v1.Pod
 	for _, uid := range m.podsWithPendingResizes {
-		pod, found := m.getPodByUID(uid)
+		pod, found := m.GetPodByUID(uid)
 		if !found {
 			logger.V(4).Info("Pod not found; removing from pending resizes", "podUID", uid)
 			continue
@@ -546,7 +552,7 @@ func (m *manager) handlePodResourcesResize(ctx context.Context, pod *v1.Pod) (bo
 	}
 
 	// Desired resources != allocated resources. Can we update the allocation to the desired resources?
-	fit, reason, message := m.canAdmitPod(ctx, m.getAllocatedPods(m.getActivePods()), pod, lifecycle.ResizeOperation)
+	fit, reason, message := m.canAdmitPod(ctx, m.getAllocatedPods(m.GetActivePods()), pod, lifecycle.ResizeOperation)
 	if fit {
 		// Update pod resource allocation checkpoint
 		if err := m.SetAllocatedResources(logger, pod); err != nil {
@@ -565,7 +571,11 @@ func (m *manager) handlePodResourcesResize(ctx context.Context, pod *v1.Pod) (bo
 	}
 
 	if reason != "" {
-		if m.statusManager.SetPodResizePendingCondition(pod.UID, reason, message, pod.Generation) {
+		preemptionDisabled := false
+		if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingSchedulerPreemption) {
+			preemptionDisabled = m.isResizePreemptionDisabled()
+		}
+		if m.statusManager.SetPodResizePendingCondition(pod.UID, reason, message, preemptionDisabled, pod.Generation) {
 			eventType := events.ResizeDeferred
 			if reason == v1.PodReasonInfeasible {
 				eventType = events.ResizeInfeasible

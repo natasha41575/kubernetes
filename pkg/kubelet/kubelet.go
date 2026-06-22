@@ -714,9 +714,7 @@ func NewMainKubelet(ctx context.Context,
 	klet.allocationManager = allocation.NewManager(
 		klet.getRootDir(),
 		klet.statusManager,
-		klet.syncPodNow,
-		klet.GetActivePods,
-		klet.podManager.GetPodByUID,
+		klet,
 		klet.sourcesReady,
 		kubeDeps.Recorder,
 		logger,
@@ -1188,6 +1186,8 @@ func NewMainKubelet(ctx context.Context,
 	// Finally, put the most recent version of the config on the Kubelet, so
 	// people can see how it was configured.
 	klet.kubeletConfiguration = *kubeCfg
+
+	klet.registerNodePreemptionPolicyHandler(ctx, nodeInformer)
 
 	// Generating the status funcs should be the last thing we do,
 	// since this relies on the rest of the Kubelet having been constructed.
@@ -3569,7 +3569,8 @@ func (kl *Kubelet) RequestPodRelist(logger klog.Logger, podUID types.UID) {
 	kl.pleg.RequestRelist(logger, podUID)
 }
 
-func (kl *Kubelet) syncPodNow(ctx context.Context, pod *v1.Pod) {
+// SyncPodNow immediately synchronizes a pod and requests a PLEG relist.
+func (kl *Kubelet) SyncPodNow(ctx context.Context, pod *v1.Pod) {
 	kl.HandlePodSyncs(ctx, []*v1.Pod{pod})
 	kl.RequestPodRelist(klog.FromContext(ctx), pod.UID)
 }
