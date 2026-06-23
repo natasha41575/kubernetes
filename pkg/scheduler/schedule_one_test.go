@@ -1400,6 +1400,124 @@ func TestHandleSchedulingFailureSkipsRecreatedPod(t *testing.T) {
 	}
 }
 
+func TestHandleSchedulingFailureForDeferredResizePod(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingSchedulerPreemption, true)
+
+	nodeWithPolicyDisabled := st.MakeNode().Name("node1").Obj()
+	nodeWithPolicyDisabled.Spec.PodPreemptionPolicy = &v1.NodePodPreemptionPolicy{
+		DisableResizePreemption: []string{"test-policy"},
+	}
+
+	tests := []struct {
+		name          string
+		node          *v1.Node
+		expectInQueue bool
+	}{
+		{
+			name:          "preemption enabled on node",
+			node:          st.MakeNode().Name("node1").Obj(),
+			expectInQueue: true,
+		},
+		{
+			name:          "preemption disabled by node policy",
+			node:          nodeWithPolicyDisabled,
+			expectInQueue: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
+			pod := st.MakePod().Name("foo").Namespace("ns").UID("pod-uid").Node("node1").SchedulerName(testSchedulerName).Obj()
+			pod.Status.Conditions = []v1.PodCondition{
+				{
+					Type:   v1.PodScheduled,
+					Status: v1.ConditionTrue,
+				},
+				{
+					Type:   v1.PodResizePending,
+					Reason: v1.PodReasonDeferred,
+				},
+			}
+
+			client := clientsetfake.NewClientset(pod, tc.node)
+			informerFactory := informers.NewSharedInformerFactory(client, 0)
+			eventBroadcaster := events.NewBroadcaster(&events.EventSinkImpl{Interface: client.EventsV1()})
+
+			schedFramework, err := tf.NewFramework(ctx,
+				[]tf.RegisterPluginFunc{
+					tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+					tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				},
+				testSchedulerName,
+				frameworkruntime.WithClientSet(client),
+				frameworkruntime.WithEventRecorder(eventBroadcaster.NewRecorder(scheme.Scheme, testSchedulerName)),
+				frameworkruntime.WithInformerFactory(informerFactory),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ar := metrics.NewMetricsAsyncRecorder(10, time.Second, ctx.Done())
+			queue := internalqueue.NewSchedulingQueue(nil, informerFactory, internalqueue.WithMetricsRecorder(ar))
+			schedCache := internalcache.New(ctx, nil, false)
+			schedCache.AddNode(logger, tc.node)
+
+			sched := &Scheduler{
+				client:          client,
+				Cache:           schedCache,
+				SchedulingQueue: queue,
+				inPlacePodVerticalScalingSchedulerPreemptionEnabled: true,
+			}
+
+			informerFactory.Start(ctx.Done())
+			informerFactory.WaitForCacheSync(ctx.Done())
+
+			queue.Add(ctx, pod)
+			popped, err := queue.Pop(logger)
+			if err != nil {
+				t.Fatalf("Pop: %v", err)
+			}
+			poppedPod := popped.(*framework.QueuedPodInfo)
+
+			nominatingInfo := &fwk.NominatingInfo{NominatingMode: fwk.ModeOverride, NominatedNodeName: "node1"}
+			sched.handleSchedulingFailure(ctx, schedFramework, poppedPod, fwk.NewStatus(fwk.Unschedulable, "no fit"), nominatingInfo, time.Now())
+
+			// Assert queue status
+			_, found := queue.GetPod(pod.Name, pod.Namespace, nil)
+			if found != tc.expectInQueue {
+				t.Errorf("expected pod in queue = %v, got %v", tc.expectInQueue, found)
+			}
+
+			// Retrieve the pod from client to verify status updates
+			updatedPod, err := client.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Assert PodScheduled status condition remains True
+			var gotScheduledStatus v1.ConditionStatus
+			for _, cond := range updatedPod.Status.Conditions {
+				if cond.Type == v1.PodScheduled {
+					gotScheduledStatus = cond.Status
+				}
+			}
+			if gotScheduledStatus != v1.ConditionTrue {
+				t.Errorf("expected PodScheduled condition status to remain True, got %v", gotScheduledStatus)
+			}
+
+			// Assert NominatedNodeName remains empty
+			if updatedPod.Status.NominatedNodeName != "" {
+				t.Errorf("expected NominatedNodeName to remain empty, got %q", updatedPod.Status.NominatedNodeName)
+			}
+		})
+	}
+}
+
 type constSigPluginConfig struct {
 	name       string
 	signature  []fwk.SignFragment
