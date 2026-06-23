@@ -116,8 +116,9 @@ type Scheduler struct {
 	// registeredHandlers contains the registrations of all handlers. It's used to check if all handlers have finished syncing before the scheduling cycles start.
 	registeredHandlers []cache.ResourceEventHandlerRegistration
 
-	nominatedNodeNameForExpectationEnabled bool
-	genericWorkloadEnabled                 bool
+	nominatedNodeNameForExpectationEnabled              bool
+	genericWorkloadEnabled                              bool
+	inPlacePodVerticalScalingSchedulerPreemptionEnabled bool
 }
 
 func (sched *Scheduler) applyDefaultHandlers() {
@@ -457,6 +458,7 @@ func New(ctx context.Context,
 		APIDispatcher:                          apiDispatcher,
 		nominatedNodeNameForExpectationEnabled: feature.DefaultFeatureGate.Enabled(features.NominatedNodeNameForExpectation),
 		genericWorkloadEnabled:                 feature.DefaultFeatureGate.Enabled(features.GenericWorkload),
+		inPlacePodVerticalScalingSchedulerPreemptionEnabled: feature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingSchedulerPreemption),
 	}
 	sched.NextEntity = podQueue.Pop
 	sched.applyDefaultHandlers()
