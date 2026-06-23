@@ -21,14 +21,19 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/component-helpers/resource"
 	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/names"
 )
 
 // NodeName is a plugin that checks if a pod spec node name matches the current node.
-type NodeName struct{}
+type NodeName struct {
+	enableInPlacePodVerticalScalingSchedulerPreemption bool
+}
 
+var _ fwk.PreFilterPlugin = &NodeName{}
 var _ fwk.FilterPlugin = &NodeName{}
 var _ fwk.EnqueueExtensions = &NodeName{}
 var _ fwk.SignPlugin = &NodeName{}
@@ -63,6 +68,23 @@ func (pl *NodeName) SignPod(ctx context.Context, pod *v1.Pod) ([]fwk.SignFragmen
 	}, nil
 }
 
+// PreFilter invoked at the prefilter extension point.
+func (pl *NodeName) PreFilter(ctx context.Context, state fwk.CycleState, pod *v1.Pod, nodes []fwk.NodeInfo) (*fwk.PreFilterResult, *fwk.Status) {
+	if pl.enableInPlacePodVerticalScalingSchedulerPreemption && pod.Spec.NodeName != "" && resource.IsPodResizeDeferred(pod) {
+		// Pod is already assigned to a node and deferred resize.
+		// We restrict evaluation to that node - other nodes will be considered as UnschedulableAndUnresolvable and therefore won't be a target of preemption.
+		return &fwk.PreFilterResult{
+			NodeNames: sets.New(pod.Spec.NodeName),
+		}, nil
+	}
+	return nil, nil
+}
+
+// PreFilterExtensions returns prefilter extensions, which is nil for this plugin.
+func (pl *NodeName) PreFilterExtensions() fwk.PreFilterExtensions {
+	return nil
+}
+
 // Filter invoked at the filter extension point.
 func (pl *NodeName) Filter(ctx context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) *fwk.Status {
 
@@ -78,6 +100,6 @@ func Fits(pod *v1.Pod, nodeInfo fwk.NodeInfo) bool {
 }
 
 // New initializes a new plugin and returns it.
-func New(_ context.Context, _ runtime.Object, _ fwk.Handle, _ feature.Features) (fwk.Plugin, error) {
-	return &NodeName{}, nil
+func New(_ context.Context, _ runtime.Object, _ fwk.Handle, fts feature.Features) (fwk.Plugin, error) {
+	return &NodeName{enableInPlacePodVerticalScalingSchedulerPreemption: fts.EnableInPlacePodVerticalScalingSchedulerPreemption}, nil
 }
