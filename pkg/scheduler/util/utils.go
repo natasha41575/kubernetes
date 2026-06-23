@@ -295,3 +295,14 @@ func PodGroupPriority(pg *schedulingv1alpha3.PodGroup) int32 {
 	// name of the pod group was empty. So, we resolve to the static default priority.
 	return 0
 }
+
+// IsResizePreemptionDisabledForPod returns true if the PodResizePreemptionDisabled condition
+// is True, or if the node preemption policy disables preemption.
+func IsResizePreemptionDisabledForPod(pod *v1.Pod, getNode func(string) (*v1.Node, error)) bool {
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == v1.PodResizePreemptionDisabled && cond.Status == v1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
