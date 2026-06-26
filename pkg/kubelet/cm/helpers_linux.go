@@ -139,15 +139,24 @@ func ResourceConfigForPod(allocatedPod *v1.Pod, enforceCPULimits bool, cpuPeriod
 	limits := resourcehelper.PodLimits(allocatedPod, resourcehelper.PodResourcesOptions{
 		// SkipPodLevelResources is set to false when PodLevelResources feature is enabled.
 		SkipPodLevelResources: !podLevelResourcesEnabled,
-		ContainerFn: func(res v1.ResourceList, containerType resourcehelper.ContainerType) {
-			if res.Cpu().IsZero() {
-				cpuLimitsDeclared = false
-			}
-			if res.Memory().IsZero() {
-				memoryLimitsDeclared = false
-			}
-		},
 	})
+
+	for _, c := range allocatedPod.Spec.Containers {
+		if c.Resources.Limits.Cpu().IsZero() {
+			cpuLimitsDeclared = false
+		}
+		if c.Resources.Limits.Memory().IsZero() {
+			memoryLimitsDeclared = false
+		}
+	}
+	for _, c := range allocatedPod.Spec.InitContainers {
+		if c.Resources.Limits.Cpu().IsZero() {
+			cpuLimitsDeclared = false
+		}
+		if c.Resources.Limits.Memory().IsZero() {
+			memoryLimitsDeclared = false
+		}
+	}
 
 	if podLevelResourcesEnabled && resourcehelper.IsPodLevelResourcesSet(allocatedPod) {
 		if !allocatedPod.Spec.Resources.Limits.Cpu().IsZero() {
