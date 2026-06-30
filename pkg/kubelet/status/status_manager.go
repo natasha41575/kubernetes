@@ -188,7 +188,7 @@ type Manager interface {
 	SetPodResizeInProgressCondition(podUID types.UID, reason, message string, observedGeneration int64) (int64, bool)
 
 	// ClearPodResizePendingCondition clears the PodResizePending condition for the pod from the cache.
-	ClearPodResizePendingCondition(podUID types.UID)
+	ClearPodResizePendingCondition(podUID types.UID, resolution string)
 
 	// ClearPodResizeInProgressCondition clears the PodResizeInProgress condition for the pod from the cache.
 	// If the condition was cleared, it returns the observedGeneration of the cleared condition and true.
@@ -369,14 +369,30 @@ func (m *manager) SetPodResizeInProgressCondition(podUID types.UID, reason, mess
 	return observedGeneration, !reflect.DeepEqual(previousCondition, m.podResizeConditions[podUID].PodResizeInProgress)
 }
 
+func (m *manager) observeDeferredResizeDuration(podUID types.UID, cond *v1.PodCondition, resolution string) {
+	if cond == nil || cond.Reason != v1.PodReasonDeferred || cond.LastTransitionTime.IsZero() {
+		return
+	}
+	pod, ok := m.podManager.GetPodByUID(podUID)
+	if !ok {
+		return
+	}
+	priorityBucket := metrics.GetPriorityBucket(pod)
+	duration := time.Since(cond.LastTransitionTime.Time).Seconds()
+	metrics.PodDeferredResizeDurationSeconds.WithLabelValues(resolution, priorityBucket).Observe(duration)
+}
+
 // ClearPodResizePendingCondition clears the PodResizePending condition for the pod from the cache.
-func (m *manager) ClearPodResizePendingCondition(podUID types.UID) {
+func (m *manager) ClearPodResizePendingCondition(podUID types.UID, resolution string) {
 	m.podStatusesLock.Lock()
 	defer m.podStatusesLock.Unlock()
 
-	if m.podResizeConditions[podUID].PodResizePending == nil {
+	cond := m.podResizeConditions[podUID].PodResizePending
+	if cond == nil {
 		return
 	}
+
+	m.observeDeferredResizeDuration(podUID, cond, resolution)
 
 	m.podResizeConditions[podUID] = podResizeConditions{
 		PodResizeInProgress: m.podResizeConditions[podUID].PodResizeInProgress,
@@ -1043,7 +1059,8 @@ func (m *manager) deletePodStatus(uid types.UID) {
 	delete(m.podStatuses, uid)
 	m.podStartupLatencyHelper.DeletePodStartupState(uid)
 	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
-		if _, exists := m.podResizeConditions[uid]; exists {
+		if conds, exists := m.podResizeConditions[uid]; exists {
+			m.observeDeferredResizeDuration(uid, conds.PodResizePending, metrics.DeferredResizeResolutionTerminated)
 			delete(m.podResizeConditions, uid)
 			m.recordInProgressResizeCount()
 			m.observePendingResizeCount()
@@ -1060,7 +1077,8 @@ func (m *manager) RemoveOrphanedStatuses(logger klog.Logger, podUIDs map[types.U
 			logger.V(5).Info("Removing pod from status map", "podUID", key)
 			delete(m.podStatuses, key)
 			if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
-				if _, exists := m.podResizeConditions[key]; exists {
+				if conds, exists := m.podResizeConditions[key]; exists {
+					m.observeDeferredResizeDuration(key, conds.PodResizePending, metrics.DeferredResizeResolutionTerminated)
 					delete(m.podResizeConditions, key)
 					m.recordInProgressResizeCount()
 					m.observePendingResizeCount()
