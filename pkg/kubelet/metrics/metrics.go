@@ -23,8 +23,10 @@ import (
 	"k8s.io/component-base/metrics"
 	"k8s.io/component-base/metrics/legacyregistry"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/kubernetes/pkg/apis/scheduling"
 	"k8s.io/kubernetes/pkg/features"
 )
 
@@ -205,6 +207,14 @@ const (
 
 	// Metric key for podsapi
 	PodWatchEventsDroppedKey = "pod_watch_events_dropped_total"
+
+	// Priority bucket label values for pod resize metrics.
+	PriorityBucketSystemCritical = "system-critical"
+	PriorityBucketHigh           = "high"
+	PriorityBucketMedium         = "medium"
+	PriorityBucketNormal         = "normal"
+	PriorityBucketLow            = "low"
+	PriorityBucketVeryLow        = "very-low"
 )
 
 type imageSizeBucket struct {
@@ -1223,10 +1233,10 @@ var (
 		&metrics.GaugeOpts{
 			Subsystem:      KubeletSubsystem,
 			Name:           PodPendingResizesKey,
-			Help:           "Number of pending resizes for pods.",
+			Help:           "Number of pending resizes for pods. Label 'priority_bucket' classifies the pod priority (system-critical, high, medium, normal, low, very-low). Label 'reason' describes the state (deferred, infeasible).",
 			StabilityLevel: metrics.ALPHA,
 		},
-		[]string{"reason"},
+		[]string{"reason", "priority_bucket"},
 	)
 
 	// PodInfeasibleResizes tracks the number of infeasible resizes for pods.
@@ -1469,3 +1479,24 @@ func GetImageSizeBucket(sizeInBytes uint64) string {
 	// return empty string when sizeInBytes is 0 (error getting image size)
 	return ""
 }
+
+// GetPriorityBucket returns the priority bucket label value for a given pod based on its priority value.
+func GetPriorityBucket(pod *v1.Pod) string {
+	if pod == nil || pod.Spec.Priority == nil || *pod.Spec.Priority == scheduling.DefaultPriorityWhenNoDefaultClassExists {
+		return PriorityBucketNormal
+	}
+	p := *pod.Spec.Priority
+	switch {
+	case p >= scheduling.SystemCriticalPriority:
+		return PriorityBucketSystemCritical
+	case p >= 100000:
+		return PriorityBucketHigh
+	case p > 0:
+		return PriorityBucketMedium
+	case p > -1000:
+		return PriorityBucketLow
+	default:
+		return PriorityBucketVeryLow
+	}
+}
+
