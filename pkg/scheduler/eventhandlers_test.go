@@ -1734,6 +1734,7 @@ func TestDeleteCompositePodGroup(t *testing.T) {
 }
 
 func TestEventHandlers_DeferredResize(t *testing.T) {
+	defaultNode := st.MakeNode().Name("node1").Obj()
 	nodeWithPreemptionPolicy := st.MakeNode().Name("node1").Obj()
 	nodeWithPreemptionPolicy.Spec.PodPreemptionPolicy = &v1.NodePodPreemptionPolicy{
 		DisableResizePreemption: []string{"test-policy"},
@@ -1755,6 +1756,7 @@ func TestEventHandlers_DeferredResize(t *testing.T) {
 			isAdd:                true,
 			initialPod: st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").
 				Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).Obj(),
+			node:          defaultNode,
 			expectInQueue: true,
 			expectInCache: true,
 		},
@@ -1764,6 +1766,17 @@ func TestEventHandlers_DeferredResize(t *testing.T) {
 			isAdd:                true,
 			initialPod: st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").
 				Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).Obj(),
+			node:          defaultNode,
+			expectInQueue: false,
+			expectInCache: true,
+		},
+		{
+			name:                 "add: feature gate enabled, assigned pod with deferred resize but preemption disabled via node spec",
+			enablePreemptionGate: true,
+			isAdd:                true,
+			initialPod: st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").
+				Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).Obj(),
+			node:          nodeWithPreemptionPolicy,
 			expectInQueue: false,
 			expectInCache: true,
 		},
@@ -1774,6 +1787,7 @@ func TestEventHandlers_DeferredResize(t *testing.T) {
 			initialPod:           st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").Obj(),
 			updatedPod: st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").
 				Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).Obj(),
+			node:          defaultNode,
 			expectInQueue: true,
 			expectInCache: true,
 		},
@@ -1784,6 +1798,7 @@ func TestEventHandlers_DeferredResize(t *testing.T) {
 			initialPod: st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").
 				Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).Obj(),
 			updatedPod:    st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").Obj(),
+			node:          defaultNode,
 			expectInQueue: false,
 			expectInCache: true,
 		},
@@ -1796,7 +1811,21 @@ func TestEventHandlers_DeferredResize(t *testing.T) {
 			updatedPod: st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").
 				Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).
 				Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Obj(),
+			node:          defaultNode,
 			expectInQueue: true,
+			expectInCache: true,
+		},
+		{
+			name:                 "update: feature gate enabled, assigned pod on node with preemption disabled",
+			enablePreemptionGate: true,
+			isAdd:                false,
+			initialPod: st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").
+				Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).Obj(),
+			updatedPod: st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").
+				Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).
+				Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Obj(),
+			node:          nodeWithPreemptionPolicy,
+			expectInQueue: false,
 			expectInCache: true,
 		},
 		{
@@ -1806,6 +1835,7 @@ func TestEventHandlers_DeferredResize(t *testing.T) {
 			initialPod:           st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").Obj(),
 			updatedPod: st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").
 				Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).Obj(),
+			node:          defaultNode,
 			expectInQueue: false,
 			expectInCache: true,
 		},
@@ -1818,6 +1848,7 @@ func TestEventHandlers_DeferredResize(t *testing.T) {
 			updatedPod: st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").
 				Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).
 				Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Obj(),
+			node:          defaultNode,
 			expectInQueue: false,
 			expectInCache: true,
 		},
@@ -1868,5 +1899,137 @@ func TestEventHandlers_DeferredResize(t *testing.T) {
 				t.Errorf("Unexpected cache state: got inCache=%v, want inCache=%v", inCache, tt.expectInCache)
 			}
 		})
+	}
+}
+
+func TestEventHandlers_DeferredResize_NodePolicyUpdate(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingSchedulerPreemption, true)
+
+	logger, ctx := ktesting.NewTestContext(t)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sched := &Scheduler{
+		Cache:           internalcache.New(ctx, nil, false, false /* CompositePodGroup */),
+		SchedulingQueue: internalqueue.NewTestQueue(ctx, nil),
+		logger:          logger,
+		Profiles: profile.Map{
+			testSchedulerName: nil,
+		},
+	}
+
+	nodeEnabled := st.MakeNode().Name("node1").Obj()
+	nodeDisabled := st.MakeNode().Name("node1").Obj()
+	nodeDisabled.Spec.PodPreemptionPolicy = &v1.NodePodPreemptionPolicy{
+		DisableResizePreemption: []string{"test-policy"},
+	}
+
+	// Initialize cache with preemption disabled on the node.
+	sched.Cache.AddNode(logger, nodeDisabled)
+
+	// Add assigned deferred resize pod without PodResizePreemptionDisabled condition, simulating an N-3 Kubelet version skew.
+	pod := st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").SchedulerName(testSchedulerName).
+		Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).Obj()
+	sched.addPod(pod)
+
+	// Verify pod is cached but excluded from scheduling queue due to node policy.
+	if _, err := sched.Cache.GetPod(pod); err != nil {
+		t.Fatalf("Expected pod in cache, got error: %v", err)
+	}
+	if _, ok := sched.SchedulingQueue.GetPod(pod.Name, pod.Namespace, pod.Spec.SchedulingGroup); ok {
+		t.Fatalf("Expected pod not to be in queue initially")
+	}
+
+	// Transition node policy to enable preemption and verify pod is re-enqueued.
+	sched.updateNodeInCache(nodeDisabled, nodeEnabled)
+	if _, ok := sched.SchedulingQueue.GetPod(pod.Name, pod.Namespace, pod.Spec.SchedulingGroup); !ok {
+		t.Fatalf("Expected pod to be in queue after node policy enabled preemption")
+	}
+
+	// Transition node policy back to disabled and verify pod is removed from queue.
+	sched.updateNodeInCache(nodeEnabled, nodeDisabled)
+	if _, ok := sched.SchedulingQueue.GetPod(pod.Name, pod.Namespace, pod.Spec.SchedulingGroup); ok {
+		t.Fatalf("Expected pod to be removed from queue after node policy disabled preemption")
+	}
+}
+
+func TestEventHandlers_DeferredResize_NodeAdd(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingSchedulerPreemption, true)
+
+	logger, ctx := ktesting.NewTestContext(t)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sched := &Scheduler{
+		Cache:           internalcache.New(ctx, nil, false, false /* CompositePodGroup */),
+		SchedulingQueue: internalqueue.NewTestQueue(ctx, nil),
+		logger:          logger,
+		Profiles: profile.Map{
+			testSchedulerName: nil,
+		},
+	}
+
+	nodeEnabled := st.MakeNode().Name("node1").Obj()
+	nodeDisabled := st.MakeNode().Name("node2").Obj()
+	nodeDisabled.Spec.PodPreemptionPolicy = &v1.NodePodPreemptionPolicy{
+		DisableResizePreemption: []string{"test-policy"},
+	}
+
+	pod1 := st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").SchedulerName(testSchedulerName).
+		Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).Obj()
+	pod2 := st.MakePod().Name("pod2").Namespace("ns1").UID("pod2").Node("node2").SchedulerName(testSchedulerName).
+		Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).Obj()
+
+	if err := sched.Cache.AddPod(logger, pod1); err != nil {
+		t.Fatalf("Failed to add pod1 to cache: %v", err)
+	}
+	if err := sched.Cache.AddPod(logger, pod2); err != nil {
+		t.Fatalf("Failed to add pod2 to cache: %v", err)
+	}
+
+	// Adding node1 (preemption enabled) should enqueue pod1
+	sched.addNodeToCache(nodeEnabled)
+	if _, ok := sched.SchedulingQueue.GetPod(pod1.Name, pod1.Namespace, pod1.Spec.SchedulingGroup); !ok {
+		t.Fatalf("Expected pod1 to be enqueued when node1 was added")
+	}
+
+	// Adding node2 (preemption disabled) should ignore pod2
+	sched.addNodeToCache(nodeDisabled)
+	if _, ok := sched.SchedulingQueue.GetPod(pod2.Name, pod2.Namespace, pod2.Spec.SchedulingGroup); ok {
+		t.Fatalf("Expected pod2 not to be enqueued when node2 (preemption disabled) was added")
+	}
+}
+
+func TestEventHandlers_DeferredResize_NodeDelete(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingSchedulerPreemption, true)
+
+	logger, ctx := ktesting.NewTestContext(t)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sched := &Scheduler{
+		Cache:           internalcache.New(ctx, nil, false, false /* CompositePodGroup */),
+		SchedulingQueue: internalqueue.NewTestQueue(ctx, nil),
+		logger:          logger,
+		Profiles: profile.Map{
+			testSchedulerName: nil,
+		},
+	}
+
+	nodeEnabled := st.MakeNode().Name("node1").Obj()
+	sched.Cache.AddNode(logger, nodeEnabled)
+
+	pod := st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").SchedulerName(testSchedulerName).
+		Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).Obj()
+	sched.addPod(pod)
+
+	if _, ok := sched.SchedulingQueue.GetPod(pod.Name, pod.Namespace, pod.Spec.SchedulingGroup); !ok {
+		t.Fatalf("Expected pod to be in queue after addPod")
+	}
+
+	// Deleting node1 should remove pod1 from scheduling queue
+	sched.deleteNodeFromCache(nodeEnabled)
+	if _, ok := sched.SchedulingQueue.GetPod(pod.Name, pod.Namespace, pod.Spec.SchedulingGroup); ok {
+		t.Fatalf("Expected pod to be removed from queue when node1 was deleted")
 	}
 }

@@ -307,3 +307,14 @@ func CompositePodGroupPriority(cpg *schedulingv1alpha3.CompositePodGroup) int32 
 	// static default priority.
 	return 0
 }
+
+// IsResizePreemptionEnabledForPod returns true if preemption is enabled for the pod on its assigned node.
+// It returns false if the assigned node is not found in cache or if node preemption policy disables preemption.
+func IsResizePreemptionEnabledForPod(pod *v1.Pod, getNode func(string) (*v1.Node, error)) bool {
+	if pod.Spec.NodeName != "" && getNode != nil {
+		if node, err := getNode(pod.Spec.NodeName); err == nil && node != nil {
+			return node.Spec.PodPreemptionPolicy == nil || len(node.Spec.PodPreemptionPolicy.DisableResizePreemption) == 0
+		}
+	}
+	return false
+}

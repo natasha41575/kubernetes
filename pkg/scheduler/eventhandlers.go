@@ -48,6 +48,7 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/noderesources"
 	"k8s.io/kubernetes/pkg/scheduler/metrics"
 	"k8s.io/kubernetes/pkg/scheduler/profile"
+	schedutil "k8s.io/kubernetes/pkg/scheduler/util"
 	"k8s.io/kubernetes/pkg/scheduler/util/assumecache"
 )
 
@@ -64,6 +65,19 @@ func (sched *Scheduler) addNodeToCache(obj interface{}) {
 	logger.V(3).Info("Add event for node", "node", klog.KObj(node))
 	sched.Cache.AddNode(logger, node)
 	sched.SchedulingQueue.MoveAllToActiveOrBackoffQueue(logger, evt, nil, node, nil)
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingSchedulerPreemption) {
+		// When a node is added to the cache, enqueue any assigned pods on that node with deferred resizes
+		// if resize preemption is enabled for them.
+		if nodeInfo, err := sched.Cache.GetNode(node.Name); err == nil && nodeInfo != nil {
+			for _, podInfo := range nodeInfo.Pods {
+				pod := podInfo.GetPod()
+				if resource.IsPodResizeDeferred(pod) && responsibleForPod(pod, sched.Profiles) && schedutil.IsResizePreemptionEnabledForPod(pod, sched.getNodeFromCache) {
+					sched.addPodToSchedulingQueue(pod)
+				}
+			}
+		}
+	}
 }
 
 func (sched *Scheduler) updateNodeInCache(oldObj, newObj interface{}) {
@@ -95,6 +109,26 @@ func (sched *Scheduler) updateNodeInCache(oldObj, newObj interface{}) {
 
 		metrics.EventHandlingLatency.WithLabelValues(evt.Label()).Observe(updatingDuration + movingDuration)
 	}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingSchedulerPreemption) {
+		// When node preemption policy changes on a node, re-evaluate queueing for assigned pods with deferred resizes on that node.
+		oldNodeDisabled := oldNode != nil && oldNode.Spec.PodPreemptionPolicy != nil && len(oldNode.Spec.PodPreemptionPolicy.DisableResizePreemption) > 0
+		newNodeDisabled := newNode != nil && newNode.Spec.PodPreemptionPolicy != nil && len(newNode.Spec.PodPreemptionPolicy.DisableResizePreemption) > 0
+		if oldNodeDisabled != newNodeDisabled {
+			if nodeInfo, err := sched.Cache.GetNode(newNode.Name); err == nil && nodeInfo != nil {
+				for _, podInfo := range nodeInfo.Pods {
+					pod := podInfo.GetPod()
+					if resource.IsPodResizeDeferred(pod) && responsibleForPod(pod, sched.Profiles) {
+						if schedutil.IsResizePreemptionEnabledForPod(pod, sched.getNodeFromCache) {
+							sched.addPodToSchedulingQueue(pod)
+						} else {
+							sched.deletePodFromSchedulingQueue(pod, false)
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func (sched *Scheduler) deleteNodeFromCache(obj interface{}) {
@@ -120,6 +154,18 @@ func (sched *Scheduler) deleteNodeFromCache(obj interface{}) {
 
 	sched.SchedulingQueue.MoveAllToActiveOrBackoffQueue(logger, evt, node, nil, nil)
 
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingSchedulerPreemption) {
+		// When a node is deleted, purge any assigned deferred resize pods on that node from the scheduling queue.
+		if nodeInfo, err := sched.Cache.GetNode(node.Name); err == nil && nodeInfo != nil {
+			for _, podInfo := range nodeInfo.Pods {
+				pod := podInfo.GetPod()
+				if resource.IsPodResizeDeferred(pod) && responsibleForPod(pod, sched.Profiles) {
+					sched.deletePodFromSchedulingQueue(pod, false)
+				}
+			}
+		}
+	}
+
 	logger.V(3).Info("Delete event for node", "node", klog.KObj(node))
 	if err := sched.Cache.RemoveNode(logger, node); err != nil {
 		utilruntime.HandleErrorWithLogger(logger, err, "Scheduler cache RemoveNode failed")
@@ -139,7 +185,7 @@ func (sched *Scheduler) addPod(obj interface{}) {
 		if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingSchedulerPreemption) {
 			// When the scheduler starts up and populates from the informer cache, assigned pods that are waiting for
 			// a deferred resize must be added to the scheduling queue so preemption can be evaluated for them.
-			if resource.IsPodResizeDeferred(pod) {
+			if resource.IsPodResizeDeferred(pod) && schedutil.IsResizePreemptionEnabledForPod(pod, sched.getNodeFromCache) {
 				logger.V(3).Info("Add event for assigned pod with deferred resize, adding to scheduling queue", "pod", klog.KObj(pod))
 				sched.addPodToSchedulingQueue(pod)
 			}
@@ -166,18 +212,20 @@ func (sched *Scheduler) updatePod(oldObj, newObj interface{}) {
 		if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingSchedulerPreemption) {
 			oldDeferred := resource.IsPodResizeDeferred(oldPod)
 			newDeferred := resource.IsPodResizeDeferred(newPod)
+			oldEligible := oldDeferred && schedutil.IsResizePreemptionEnabledForPod(oldPod, sched.getNodeFromCache)
+			newEligible := newDeferred && schedutil.IsResizePreemptionEnabledForPod(newPod, sched.getNodeFromCache)
 
-			if !oldDeferred && newDeferred {
-				// When an assigned pod transitions to a deferred resize,
+			if !oldEligible && newEligible {
+				// When an assigned pod transitions to an eligible deferred resize (or when preemption is re-enabled for it),
 				// we must add it to the scheduling queue so the scheduler can evaluate feasibility and run preemption on the assigned node.
-				logger.V(3).Info("Assigned pod transitioned to deferred resize, adding to scheduling queue", "pod", klog.KObj(newPod))
+				logger.V(3).Info("Assigned pod transitioned to eligible deferred resize, adding to scheduling queue", "pod", klog.KObj(newPod))
 				sched.addPodToSchedulingQueue(newPod)
-			} else if oldDeferred && !newDeferred {
-				// When an assigned pod is no longer deferred,
+			} else if oldEligible && !newEligible {
+				// When an assigned pod is no longer eligible for deferred resize preemption (e.g., condition cleared or disabled),
 				// remove it from the scheduling queue so the scheduler stops evaluating preemption for it.
-				logger.V(3).Info("Assigned pod is no longer deferred, removing from scheduling queue", "pod", klog.KObj(newPod))
+				logger.V(3).Info("Assigned pod is no longer eligible for deferred resize preemption, removing from scheduling queue", "pod", klog.KObj(newPod))
 				sched.deletePodFromSchedulingQueue(newPod, false)
-			} else if oldDeferred && newDeferred && !apiequality.Semantic.DeepEqual(oldPod.Spec, newPod.Spec) {
+			} else if oldEligible && newEligible && !apiequality.Semantic.DeepEqual(oldPod.Spec, newPod.Spec) {
 				// If the pod's spec mutates while queued for a deferred resize (e.g., resource requests updated), update its queue representation.
 				logger.V(3).Info("Assigned pod spec changed while deferred, updating scheduling queue", "pod", klog.KObj(newPod))
 				sched.SchedulingQueue.Update(klog.NewContext(context.Background(), logger), oldPod, newPod)
