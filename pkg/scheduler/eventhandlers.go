@@ -96,6 +96,30 @@ func (sched *Scheduler) updateNodeInCache(oldObj, newObj interface{}) {
 
 		metrics.EventHandlingLatency.WithLabelValues(evt.Label()).Observe(updatingDuration + movingDuration)
 	}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingSchedulerPreemption) {
+		// TODO: This node preemption policy check is a temporary version-skew fallback during upgrade windows.
+		// While node.Spec.PodPreemptionPolicy can mutate dynamically, proper queue transitions rely on upgraded
+		// Kubelets propagating policy via pod conditions. During version skew (N-3 Kubelet), the scheduler directly
+		// reconciles assigned deferred resize pods when node preemption policy changes.
+		// This fallback should be removed at beta+3 of InPlacePodVerticalScalingSchedulerPreemption.
+		oldNodeDisabled := oldNode != nil && oldNode.Spec.PodPreemptionPolicy != nil && len(oldNode.Spec.PodPreemptionPolicy.DisableResizePreemption) > 0
+		newNodeDisabled := newNode != nil && newNode.Spec.PodPreemptionPolicy != nil && len(newNode.Spec.PodPreemptionPolicy.DisableResizePreemption) > 0
+		if oldNodeDisabled != newNodeDisabled {
+			if nodeInfo, err := sched.Cache.GetNode(newNode.Name); err == nil && nodeInfo != nil {
+				for _, podInfo := range nodeInfo.Pods {
+					pod := podInfo.GetPod()
+					if resource.IsPodResizeDeferred(pod) && responsibleForPod(pod, sched.Profiles) {
+						if newNodeDisabled {
+							sched.deletePodFromSchedulingQueue(pod, false)
+						} else {
+							sched.addPodToSchedulingQueue(pod)
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func (sched *Scheduler) deleteNodeFromCache(obj interface{}) {

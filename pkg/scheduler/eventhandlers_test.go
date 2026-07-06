@@ -1654,3 +1654,54 @@ func TestEventHandlers_DeferredResize(t *testing.T) {
 		})
 	}
 }
+
+func TestEventHandlers_DeferredResize_NodePolicyUpdate(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingSchedulerPreemption, true)
+
+	logger, ctx := ktesting.NewTestContext(t)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sched := &Scheduler{
+		Cache:           internalcache.New(ctx, nil, false),
+		SchedulingQueue: internalqueue.NewTestQueue(ctx, nil),
+		logger:          logger,
+		Profiles: profile.Map{
+			testSchedulerName: nil,
+		},
+	}
+
+	nodeEnabled := st.MakeNode().Name("node1").Obj()
+	nodeDisabled := st.MakeNode().Name("node1").Obj()
+	nodeDisabled.Spec.PodPreemptionPolicy = &v1.NodePodPreemptionPolicy{
+		DisableResizePreemption: []string{"test-policy"},
+	}
+
+	// Initialize cache with preemption disabled on the node.
+	sched.Cache.AddNode(logger, nodeDisabled)
+
+	// Add assigned deferred resize pod without PodResizePreemptionDisabled condition, simulating an N-3 Kubelet version skew.
+	pod := st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Node("node1").SchedulerName(testSchedulerName).
+		Condition(v1.PodResizePending, v1.ConditionTrue, v1.PodReasonDeferred).Obj()
+	sched.addPod(pod)
+
+	// Verify pod is cached but excluded from scheduling queue due to node policy.
+	if _, err := sched.Cache.GetPod(pod); err != nil {
+		t.Fatalf("Expected pod in cache, got error: %v", err)
+	}
+	if _, ok := sched.SchedulingQueue.GetPod(pod.Name, pod.Namespace, pod.Spec.SchedulingGroup); ok {
+		t.Fatalf("Expected pod not to be in queue initially")
+	}
+
+	// Transition node policy to enable preemption and verify pod is re-enqueued.
+	sched.updateNodeInCache(nodeDisabled, nodeEnabled)
+	if _, ok := sched.SchedulingQueue.GetPod(pod.Name, pod.Namespace, pod.Spec.SchedulingGroup); !ok {
+		t.Fatalf("Expected pod to be in queue after node policy enabled preemption")
+	}
+
+	// Transition node policy back to disabled and verify pod is removed from queue.
+	sched.updateNodeInCache(nodeEnabled, nodeDisabled)
+	if _, ok := sched.SchedulingQueue.GetPod(pod.Name, pod.Namespace, pod.Spec.SchedulingGroup); ok {
+		t.Fatalf("Expected pod to be removed from queue after node policy disabled preemption")
+	}
+}

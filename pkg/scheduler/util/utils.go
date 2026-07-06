@@ -304,5 +304,17 @@ func IsResizePreemptionDisabledForPod(pod *v1.Pod, getNode func(string) (*v1.Nod
 			return true
 		}
 	}
+	// TODO: This node preemption policy check is a temporary best-effort fallback during upgrade windows.
+	// While node.Spec.PodPreemptionPolicy can mutate dynamically, the scheduler does not watch node policy
+	// changes to wake up or remove pods from the scheduling queue; proper queue transitions rely on upgraded
+	// Kubelets propagating policy via pod conditions.
+	// This fallback should be removed at beta+3 of InPlacePodVerticalScalingSchedulerPreemption.
+	if pod.Spec.NodeName != "" && getNode != nil {
+		if node, err := getNode(pod.Spec.NodeName); err == nil && node != nil {
+			if node.Spec.PodPreemptionPolicy != nil && len(node.Spec.PodPreemptionPolicy.DisableResizePreemption) > 0 {
+				return true
+			}
+		}
+	}
 	return false
 }
