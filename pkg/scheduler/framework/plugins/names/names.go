@@ -33,6 +33,7 @@ const (
 	NodeUnschedulable               = "NodeUnschedulable"
 	NodeVolumeLimits                = "NodeVolumeLimits"
 	PodTopologySpread               = "PodTopologySpread"
+	PodResizePreemption             = "PodResizePreemption"
 	SchedulingGates                 = "SchedulingGates"
 	TaintToleration                 = "TaintToleration"
 	VolumeBinding                   = "VolumeBinding"

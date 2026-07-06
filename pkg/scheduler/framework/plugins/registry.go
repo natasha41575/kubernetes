@@ -33,6 +33,7 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodeunschedulable"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodevolumelimits"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/podgrouppodscount"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/podresizepreemption"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/podtopologyspread"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/queuesort"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/schedulinggates"
@@ -58,6 +59,7 @@ func NewInTreeRegistry() runtime.Registry {
 		nodeaffinity.Name:                    runtime.FactoryAdapter(fts, nodeaffinity.New),
 		nodedeclaredfeatures.Name:            runtime.FactoryAdapter(fts, nodedeclaredfeatures.New),
 		podtopologyspread.Name:               runtime.FactoryAdapter(fts, podtopologyspread.New),
+		podresizepreemption.Name:             runtime.FactoryAdapter(fts, podresizepreemption.New),
 		nodeunschedulable.Name:               runtime.FactoryAdapter(fts, nodeunschedulable.New),
 		noderesources.Name:                   runtime.FactoryAdapter(fts, noderesources.NewFit),
 		noderesources.BalancedAllocationName: runtime.FactoryAdapter(fts, noderesources.NewBalancedAllocation),
