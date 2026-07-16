@@ -4167,6 +4167,34 @@
   componentEndpoints:
   - component: kubelet
     endpoint: /metrics
+- name: pod_deferred_resize_duration_seconds
+  subsystem: kubelet
+  help: Duration in seconds that a pod resize remains deferred before completion.
+  type: Histogram
+  stabilityLevel: ALPHA
+  labels:
+  - priority_bucket
+  - resolution
+  buckets:
+  - 5
+  - 10
+  - 15
+  - 20
+  - 30
+  - 45
+  - 60
+  - 90
+  - 120
+  - 150
+  - 180
+  - 300
+  - 600
+  - 1200
+  - 1800
+  - 3600
+  componentEndpoints:
+  - component: kubelet
+    endpoint: /metrics
 - name: pod_in_progress_resizes
   subsystem: kubelet
   help: Number of in-progress resizes for pods.
@@ -4191,6 +4219,7 @@
   type: Gauge
   stabilityLevel: ALPHA
   labels:
+  - priority_bucket
   - reason
   componentEndpoints:
   - component: kubelet
