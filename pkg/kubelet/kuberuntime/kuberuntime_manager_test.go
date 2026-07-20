@@ -6248,3 +6248,91 @@ func TestOnPodSandboxReadyTiming(t *testing.T) {
 	assert.Len(t, fakeRuntime.Sandboxes, 1, "final sandbox count")
 	assert.Len(t, fakeRuntime.Containers, 1, "final container count")
 }
+
+func TestSetActuatedPodLevelResources(t *testing.T) {
+	logger, tCtx := ktesting.NewTestContext(t)
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
+	_, _, m, err := createTestRuntimeManager(tCtx)
+	require.NoError(t, err)
+
+	cpu100m := resource.MustParse("100m")
+	mem100M := resource.MustParse("100Mi")
+	cpu200m := resource.MustParse("200m")
+	mem200M := resource.MustParse("200Mi")
+
+	t.Run("spec.resources is nil, aggregate container resources recorded", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				UID:       "pod1",
+				Name:      "foo",
+				Namespace: "bar",
+			},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{
+						Name: "c1",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
+							Limits:   v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
+						},
+					},
+					{
+						Name: "c2",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
+							Limits:   v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
+						},
+					},
+				},
+			},
+		}
+
+		err := m.SetActuatedPodLevelResources(logger, pod)
+		require.NoError(t, err)
+
+		got, found := m.actuatedState.GetPodLevelResources(pod.UID)
+		require.True(t, found)
+		require.NotNil(t, got)
+
+		expectedCPU := resource.MustParse("300m")
+		expectedMem := resource.MustParse("300Mi")
+		assert.True(t, got.Requests.Cpu().Equal(expectedCPU), "CPU request mismatch")
+		assert.True(t, got.Requests.Memory().Equal(expectedMem), "Memory request mismatch")
+		assert.True(t, got.Limits.Cpu().Equal(expectedCPU), "CPU limit mismatch")
+		assert.True(t, got.Limits.Memory().Equal(expectedMem), "Memory limit mismatch")
+	})
+
+	t.Run("spec.resources set with InPlacePodLevelResourcesVerticalScaling enabled", func(t *testing.T) {
+		featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodLevelResourcesVerticalScaling, true)
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				UID:       "pod2",
+				Name:      "foo2",
+				Namespace: "bar",
+			},
+			Spec: v1.PodSpec{
+				Resources: &v1.ResourceRequirements{
+					Requests: v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
+					Limits:   v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
+				},
+				Containers: []v1.Container{
+					{
+						Name: "c1",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
+						},
+					},
+				},
+			},
+		}
+
+		err := m.SetActuatedPodLevelResources(logger, pod)
+		require.NoError(t, err)
+
+		got, found := m.actuatedState.GetPodLevelResources(pod.UID)
+		require.True(t, found)
+		require.NotNil(t, got)
+		assert.True(t, got.Requests.Cpu().Equal(cpu200m), "Explicit pod CPU request mismatch")
+		assert.True(t, got.Requests.Memory().Equal(mem200M), "Explicit pod Memory request mismatch")
+	})
+}

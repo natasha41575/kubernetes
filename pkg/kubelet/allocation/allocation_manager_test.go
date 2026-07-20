@@ -1704,7 +1704,10 @@ func TestAllocationManagerAddPodWithPLR(t *testing.T) {
 			currentActivePods:              []*v1.Pod{pod1SmallWithPLR},
 			podToAdd:                       pod1LargeWithPLR,
 			admitFunc: func(attrs *lifecycle.PodAdmitAttributes) lifecycle.PodAdmitResult {
-				cpuRequest := attrs.Pod.Spec.Resources.Requests.Cpu().Value()
+				cpuRequest := attrs.Pod.Spec.Containers[0].Resources.Requests.Cpu().Value()
+				if attrs.Pod.Spec.Resources != nil && attrs.Pod.Spec.Resources.Requests != nil {
+					cpuRequest = attrs.Pod.Spec.Resources.Requests.Cpu().Value()
+				}
 				if cpuRequest > 1 {
 					return lifecycle.PodAdmitResult{
 						Admit:   false,
@@ -1714,7 +1717,6 @@ func TestAllocationManagerAddPodWithPLR(t *testing.T) {
 				}
 				return lifecycle.PodAdmitResult{Admit: true}
 			},
-			// pod is still admitted as allocated resources are considered during admission.
 			expectAdmit:             false,
 			admissionFailureReason:  "OutOfcpu",
 			admissionFailureMessage: "not enough CPUs available for pod ns1/pod1, requested: 2, available:1",
@@ -2495,4 +2497,91 @@ func setContainerStatus(podStatus *kubecontainer.PodStatus, c *v1.Container, idx
 			MemoryLimit: c.Resources.Limits.Memory(),
 		},
 	}
+}
+
+func TestSetAllocatedResourcesPodLevel(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
+	allocationManager := makeAllocationManager(t, &containertest.FakeRuntime{}, nil, nil)
+
+	cpu100m := resource.MustParse("100m")
+	mem100M := resource.MustParse("100Mi")
+	cpu200m := resource.MustParse("200m")
+	mem200M := resource.MustParse("200Mi")
+
+	t.Run("pod.Spec.Resources is nil, aggregate container resources allocated", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				UID:       "pod-alloc-1",
+				Name:      "foo",
+				Namespace: "bar",
+			},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{
+						Name: "c1",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
+							Limits:   v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
+						},
+					},
+					{
+						Name: "c2",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
+							Limits:   v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
+						},
+					},
+				},
+			},
+		}
+
+		err := allocationManager.SetAllocatedResources(logger, pod)
+		require.NoError(t, err)
+
+		got, found := allocationManager.(*manager).allocated.GetPodLevelResources(pod.UID)
+		require.True(t, found)
+		require.NotNil(t, got)
+
+		expectedCPU := resource.MustParse("300m")
+		expectedMem := resource.MustParse("300Mi")
+		assert.True(t, got.Requests.Cpu().Equal(expectedCPU), "Allocated CPU request mismatch")
+		assert.True(t, got.Requests.Memory().Equal(expectedMem), "Allocated Memory request mismatch")
+		assert.True(t, got.Limits.Cpu().Equal(expectedCPU), "Allocated CPU limit mismatch")
+		assert.True(t, got.Limits.Memory().Equal(expectedMem), "Allocated Memory limit mismatch")
+	})
+
+	t.Run("pod.Spec.Resources is set with InPlacePodLevelResourcesVerticalScaling", func(t *testing.T) {
+		featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodLevelResourcesVerticalScaling, true)
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				UID:       "pod-alloc-2",
+				Name:      "foo2",
+				Namespace: "bar",
+			},
+			Spec: v1.PodSpec{
+				Resources: &v1.ResourceRequirements{
+					Requests: v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
+					Limits:   v1.ResourceList{v1.ResourceCPU: cpu200m, v1.ResourceMemory: mem200M},
+				},
+				Containers: []v1.Container{
+					{
+						Name: "c1",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100M},
+						},
+					},
+				},
+			},
+		}
+
+		err := allocationManager.SetAllocatedResources(logger, pod)
+		require.NoError(t, err)
+
+		got, found := allocationManager.(*manager).allocated.GetPodLevelResources(pod.UID)
+		require.True(t, found)
+		require.NotNil(t, got)
+		assert.True(t, got.Requests.Cpu().Equal(cpu200m), "Explicit allocated CPU request mismatch")
+		assert.True(t, got.Requests.Memory().Equal(mem200M), "Explicit allocated Memory request mismatch")
+	})
 }

@@ -432,12 +432,24 @@ func updatePodFromAllocation(pod *v1.Pod, allocated state.PodResourceInfo) (*v1.
 	}
 
 	updated := false
-	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodLevelResourcesVerticalScaling) {
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
 		pAlloc := allocated.PodLevelResources
-		if !apiequality.Semantic.DeepEqual(pod.Spec.Resources, pAlloc) {
+		var expectedPodLevel *v1.ResourceRequirements
+		if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodLevelResourcesVerticalScaling) && pod.Spec.Resources != nil {
+			expectedPodLevel = pod.Spec.Resources
+		} else if pAlloc != nil {
+			opts := resourcehelper.PodResourcesOptions{SkipPodLevelResources: true}
+			expectedPodLevel = &v1.ResourceRequirements{
+				Requests: resourcehelper.PodRequests(pod, opts),
+				Limits:   resourcehelper.PodLimits(pod, opts),
+			}
+		}
+		if pAlloc != nil && !apiequality.Semantic.DeepEqual(expectedPodLevel, pAlloc) {
 			// Allocation differs from pod spec, retrieve the allocation
 			pod = pod.DeepCopy()
-			pod.Spec.Resources = pAlloc
+			if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodLevelResourcesVerticalScaling) {
+				pod.Spec.Resources = pAlloc
+			}
 			updated = true
 		}
 	}
@@ -478,8 +490,16 @@ func (m *manager) SetAllocatedResources(logger klog.Logger, pod *v1.Pod) error {
 
 func allocationFromPod(pod *v1.Pod) state.PodResourceInfo {
 	var podAlloc state.PodResourceInfo
-	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodLevelResourcesVerticalScaling) && pod.Spec.Resources != nil {
-		podAlloc.PodLevelResources = pod.Spec.Resources.DeepCopy()
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
+		if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodLevelResourcesVerticalScaling) && pod.Spec.Resources != nil {
+			podAlloc.PodLevelResources = pod.Spec.Resources.DeepCopy()
+		} else {
+			opts := resourcehelper.PodResourcesOptions{SkipPodLevelResources: true}
+			podAlloc.PodLevelResources = &v1.ResourceRequirements{
+				Requests: resourcehelper.PodRequests(pod, opts),
+				Limits:   resourcehelper.PodLimits(pod, opts),
+			}
+		}
 	}
 	podAlloc.ContainerResources = make(map[string]v1.ResourceRequirements)
 	for container, containerType := range podutil.ContainerIter(&pod.Spec, podutil.InitContainers|podutil.Containers) {

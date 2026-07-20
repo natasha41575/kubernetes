@@ -43,6 +43,7 @@ import (
 	ref "k8s.io/client-go/tools/reference"
 	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/component-base/logs/logreduction"
+	resourcehelper "k8s.io/component-helpers/resource"
 	internalapi "k8s.io/cri-api/pkg/apis"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 	crierror "k8s.io/cri-api/pkg/errors"
@@ -1457,7 +1458,7 @@ func (m *kubeGenericRuntimeManager) computePodLevelResourcesResizeAction(ctx con
 		// For RestartContainer, this may trigger a container restart.
 	}
 
-	desiredPodLevelResources := podResourcesFromRequirements(pod.Spec.Resources)
+	desiredPodLevelResources := podResourcesFromRequirements(m.getEffectivePodLevelResources(pod))
 	currentPodLevelResources := podResourcesFromRequirements(actuatedPodLevelResources)
 	return currentPodLevelResources != desiredPodLevelResources
 }
@@ -2224,6 +2225,18 @@ func (m *kubeGenericRuntimeManager) ListPodSandboxMetrics(ctx context.Context) (
 	return m.runtimeService.ListPodSandboxMetrics(ctx)
 }
 
+func (m *kubeGenericRuntimeManager) getEffectivePodLevelResources(pod *v1.Pod) *v1.ResourceRequirements {
+	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodLevelResourcesVerticalScaling) && pod.Spec.Resources != nil &&
+		(pod.Spec.Resources.Requests != nil || pod.Spec.Resources.Limits != nil) {
+		return pod.Spec.Resources.DeepCopy()
+	}
+	opts := resourcehelper.PodResourcesOptions{SkipPodLevelResources: true}
+	return &v1.ResourceRequirements{
+		Requests: resourcehelper.PodRequests(pod, opts),
+		Limits:   resourcehelper.PodLimits(pod, opts),
+	}
+}
+
 func (m *kubeGenericRuntimeManager) SetActuatedPodLevelResources(logger klog.Logger, actuatedPod *v1.Pod) error {
 	if _, ok := m.actuatedState.GetPodResourceInfo(actuatedPod.UID); !ok {
 		// This is a new pod. Initialize actuated resources to detect pre-start container resizes to
@@ -2239,15 +2252,8 @@ func (m *kubeGenericRuntimeManager) SetActuatedPodLevelResources(logger klog.Log
 		return nil
 	}
 
-	if actuatedPod.Spec.Resources == nil {
-		return nil
-	}
-
-	if actuatedPod.Spec.Resources.Requests == nil && actuatedPod.Spec.Resources.Limits == nil {
-		return nil
-	}
-
-	return m.actuatedState.SetPodLevelResources(logger, actuatedPod.UID, actuatedPod.Spec.Resources)
+	actuatedPodResources := m.getEffectivePodLevelResources(actuatedPod)
+	return m.actuatedState.SetPodLevelResources(logger, actuatedPod.UID, actuatedPodResources)
 }
 
 // isPodResizeInProgress checks whether the actuated resizable resources differ from
@@ -2256,7 +2262,7 @@ func (m *kubeGenericRuntimeManager) SetActuatedPodLevelResources(logger klog.Log
 // - Non-resizable containers: non-restartable init containers, ephemeral containers
 // - Non-resizable resources: only CPU & memory are resizable
 // - Non-running containers: they will be sized correctly when (re)started
-// * any running pod if InPlacePodLevelResourcesVerticalScaling is enabled.
+// * any running pod if InPlacePodVerticalScaling is enabled.
 func (m *kubeGenericRuntimeManager) IsPodResizeInProgress(allocatedPod *v1.Pod, podStatus *kubecontainer.PodStatus) bool {
 	if m.isContainerResourceResizeInProgress(allocatedPod, podStatus) {
 		return true
@@ -2292,11 +2298,7 @@ func (m *kubeGenericRuntimeManager) isContainerResourceResizeInProgress(allocate
 }
 
 func (m *kubeGenericRuntimeManager) isPodLevelResourcesResizeInProgress(allocatedPod *v1.Pod, podStatus *kubecontainer.PodStatus) bool {
-	if !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodLevelResourcesVerticalScaling) {
-		return false
-	}
-
-	if allocatedPod.Spec.Resources == nil || podStatus == nil {
+	if !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodLevelResourcesVerticalScaling) || podStatus == nil {
 		return false
 	}
 
@@ -2305,7 +2307,7 @@ func (m *kubeGenericRuntimeManager) isPodLevelResourcesResizeInProgress(allocate
 		return false
 	}
 
-	allocatedPodResources := allocatedPod.Spec.Resources
+	allocatedPodResources := m.getEffectivePodLevelResources(allocatedPod)
 
 	return !cpuMemoryResourcesEqual(actuatedPodResources, allocatedPodResources)
 }
