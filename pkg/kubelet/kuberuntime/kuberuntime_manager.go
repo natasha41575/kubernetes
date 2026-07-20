@@ -2224,7 +2224,7 @@ func (m *kubeGenericRuntimeManager) ListPodSandboxMetrics(ctx context.Context) (
 	return m.runtimeService.ListPodSandboxMetrics(ctx)
 }
 
-func (m *kubeGenericRuntimeManager) UpdateActuatedPodLevelResources(logger klog.Logger, actuatedPod *v1.Pod) error {
+func (m *kubeGenericRuntimeManager) SetActuatedPodLevelResources(logger klog.Logger, actuatedPod *v1.Pod) error {
 	if _, ok := m.actuatedState.GetPodResourceInfo(actuatedPod.UID); !ok {
 		// This is a new pod. Initialize actuated resources to detect pre-start container resizes to
 		// trigger pod cgroup updates.

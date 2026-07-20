@@ -1803,7 +1803,7 @@ func TestComputePodActionsForRestartAllContainers(t *testing.T) {
 			status := test.podStatusFunc()
 
 			// Initialize the actuated resources.
-			require.NoError(t, m.UpdateActuatedPodLevelResources(tCtx.Logger(), pod))
+			require.NoError(t, m.SetActuatedPodLevelResources(tCtx.Logger(), pod))
 
 			actions := m.computePodActions(tCtx, pod, status, test.restartAllContainers)
 
@@ -2202,7 +2202,7 @@ func TestComputePodActionsWithInitContainers(t *testing.T) {
 			pod, status := makeBasePodAndStatusWithInitContainers()
 
 			// Sync the actuated state with the base values before any resize
-			require.NoError(t, m.UpdateActuatedPodLevelResources(tCtx.Logger(), pod))
+			require.NoError(t, m.SetActuatedPodLevelResources(tCtx.Logger(), pod))
 
 			if test.actions.ContainersToUpdate != nil {
 				for res := range test.actions.ContainersToUpdate {
@@ -3981,7 +3981,7 @@ func TestComputePodResizeActionForOOMKilledContainer(t *testing.T) {
 		{ResourceName: v1.ResourceMemory, RestartPolicy: v1.NotRequired},
 	}
 	// record the pre-resize resource limits as what was last actuated.
-	require.NoError(t, m.UpdateActuatedPodLevelResources(logger, pod))
+	require.NoError(t, m.SetActuatedPodLevelResources(logger, pod))
 
 	// Pod Resized
 	resize := pod.Spec.Containers[0].Resources.DeepCopy()
@@ -4047,7 +4047,7 @@ func TestComputePodResizeActionForOOMKilledInitContainer(t *testing.T) {
 	pod.Status.ContainerStatuses = nil
 
 	// record pre-resize resource limits as what was last actuated.
-	require.NoError(t, m.UpdateActuatedPodLevelResources(logger, pod))
+	require.NoError(t, m.SetActuatedPodLevelResources(logger, pod))
 
 	// Pod Resized
 	resize := pod.Spec.InitContainers[0].Resources.DeepCopy()
@@ -4120,7 +4120,7 @@ func TestComputePodResizeActionForOOMKilledSidecarContainer(t *testing.T) {
 	})
 
 	// record pre-resize resource limits as what was last actuated.
-	require.NoError(t, m.UpdateActuatedPodLevelResources(logger, pod))
+	require.NoError(t, m.SetActuatedPodLevelResources(logger, pod))
 
 	// Pod Resized
 	resize := pod.Spec.InitContainers[0].Resources.DeepCopy()

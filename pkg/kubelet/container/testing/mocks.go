@@ -1668,12 +1668,12 @@ func (_c *MockRuntime_Type_Call) RunAndReturn(run func() string) *MockRuntime_Ty
 	return _c
 }
 
-// UpdateActuatedPodLevelResources provides a mock function for the type MockRuntime
-func (_mock *MockRuntime) UpdateActuatedPodLevelResources(logger klog.Logger, actuatedPod *v10.Pod) error {
+// SetActuatedPodLevelResources provides a mock function for the type MockRuntime
+func (_mock *MockRuntime) SetActuatedPodLevelResources(logger klog.Logger, actuatedPod *v10.Pod) error {
 	ret := _mock.Called(logger, actuatedPod)
 
 	if len(ret) == 0 {
-		panic("no return value specified for UpdateActuatedPodLevelResources")
+		panic("no return value specified for SetActuatedPodLevelResources")
 	}
 
 	var r0 error
@@ -1685,19 +1685,19 @@ func (_mock *MockRuntime) UpdateActuatedPodLevelResources(logger klog.Logger, ac
 	return r0
 }
 
-// MockRuntime_UpdateActuatedPodLevelResources_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'UpdateActuatedPodLevelResources'
-type MockRuntime_UpdateActuatedPodLevelResources_Call struct {
+// MockRuntime_SetActuatedPodLevelResources_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetActuatedPodLevelResources'
+type MockRuntime_SetActuatedPodLevelResources_Call struct {
 	*mock.Call
 }
 
-// UpdateActuatedPodLevelResources is a helper method to define mock.On call
+// SetActuatedPodLevelResources is a helper method to define mock.On call
 //   - logger klog.Logger
 //   - actuatedPod *v10.Pod
-func (_e *MockRuntime_Expecter) UpdateActuatedPodLevelResources(logger interface{}, actuatedPod interface{}) *MockRuntime_UpdateActuatedPodLevelResources_Call {
-	return &MockRuntime_UpdateActuatedPodLevelResources_Call{Call: _e.mock.On("UpdateActuatedPodLevelResources", logger, actuatedPod)}
+func (_e *MockRuntime_Expecter) SetActuatedPodLevelResources(logger interface{}, actuatedPod interface{}) *MockRuntime_SetActuatedPodLevelResources_Call {
+	return &MockRuntime_SetActuatedPodLevelResources_Call{Call: _e.mock.On("SetActuatedPodLevelResources", logger, actuatedPod)}
 }
 
-func (_c *MockRuntime_UpdateActuatedPodLevelResources_Call) Run(run func(logger klog.Logger, actuatedPod *v10.Pod)) *MockRuntime_UpdateActuatedPodLevelResources_Call {
+func (_c *MockRuntime_SetActuatedPodLevelResources_Call) Run(run func(logger klog.Logger, actuatedPod *v10.Pod)) *MockRuntime_SetActuatedPodLevelResources_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 klog.Logger
 		if args[0] != nil {
@@ -1715,12 +1715,12 @@ func (_c *MockRuntime_UpdateActuatedPodLevelResources_Call) Run(run func(logger 
 	return _c
 }
 
-func (_c *MockRuntime_UpdateActuatedPodLevelResources_Call) Return(err error) *MockRuntime_UpdateActuatedPodLevelResources_Call {
+func (_c *MockRuntime_SetActuatedPodLevelResources_Call) Return(err error) *MockRuntime_SetActuatedPodLevelResources_Call {
 	_c.Call.Return(err)
 	return _c
 }
 
-func (_c *MockRuntime_UpdateActuatedPodLevelResources_Call) RunAndReturn(run func(logger klog.Logger, actuatedPod *v10.Pod) error) *MockRuntime_UpdateActuatedPodLevelResources_Call {
+func (_c *MockRuntime_SetActuatedPodLevelResources_Call) RunAndReturn(run func(logger klog.Logger, actuatedPod *v10.Pod) error) *MockRuntime_SetActuatedPodLevelResources_Call {
 	_c.Call.Return(run)
 	return _c
 }

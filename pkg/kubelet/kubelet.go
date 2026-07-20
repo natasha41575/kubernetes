@@ -2211,7 +2211,7 @@ func (kl *Kubelet) SyncPod(ctx context.Context, updateType kubetypes.SyncPodType
 					return false, nil, fmt.Errorf("failed to ensure that the pod: %v cgroups exist and are correctly applied: %v", pod.UID, err)
 				}
 
-				if err = kl.containerRuntime.UpdateActuatedPodLevelResources(logger, pod); err != nil {
+				if err = kl.containerRuntime.SetActuatedPodLevelResources(logger, pod); err != nil {
 					return false, nil, fmt.Errorf("failed to update the state of pod-level resources for the pod %v : %w", pod.UID, err)
 				}
 			}

@@ -596,6 +596,6 @@ func (f *FakeRuntime) IsPodResizeInProgress(allocatedPod *v1.Pod, podStatus *kub
 	return f.PodResizeInProgress
 }
 
-func (f *FakeRuntime) UpdateActuatedPodLevelResources(logger klog.Logger, allocatedPod *v1.Pod) error {
+func (f *FakeRuntime) SetActuatedPodLevelResources(logger klog.Logger, allocatedPod *v1.Pod) error {
 	return nil
 }
