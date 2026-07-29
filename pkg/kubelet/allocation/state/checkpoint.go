@@ -20,60 +20,61 @@ import (
 	"encoding/json"
 	"fmt"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager"
-	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager/checksum"
 )
 
 var _ checkpointmanager.Checkpoint = &Checkpoint{}
 
-type PodResourceCheckpointInfo struct {
-	Entries PodResourceInfoMap `json:"entries,omitempty"`
-}
-
-// Checkpoint represents a structure to store pod resource allocation checkpoint data
+// Checkpoint represents a structure to store pod resource allocation checkpoint data as a Protobuf PodList.
 type Checkpoint struct {
-	// Data is a serialized PodResourceAllocationInfo
-	Data string `json:"data"`
-	// Checksum is a checksum of Data
-	Checksum checksum.Checksum `json:"checksum"`
+	PodList  *v1.PodList
+	migrated bool
 }
 
-// NewCheckpoint creates a new checkpoint from a list of claim info states
-func NewCheckpoint(allocations *PodResourceCheckpointInfo) (*Checkpoint, error) {
-
-	serializedAllocations, err := json.Marshal(allocations)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize allocations for checkpointing: %w", err)
+// NewCheckpoint creates a new checkpoint from a PodList
+func NewCheckpoint(podList *v1.PodList) *Checkpoint {
+	return &Checkpoint{
+		PodList: podList,
 	}
-
-	cp := &Checkpoint{
-		Data: string(serializedAllocations),
-	}
-	cp.Checksum = checksum.New(cp.Data)
-	return cp, nil
 }
 
 func (cp *Checkpoint) MarshalCheckpoint() ([]byte, error) {
-	return json.Marshal(cp)
+	if cp.PodList == nil {
+		cp.PodList = &v1.PodList{}
+	}
+	return cp.PodList.Marshal()
 }
 
-// UnmarshalCheckpoint unmarshals checkpoint from JSON
+// UnmarshalCheckpoint unmarshals checkpoint trying Protobuf first, then falling back to legacy JSON V1 format.
 func (cp *Checkpoint) UnmarshalCheckpoint(blob []byte) error {
-	return json.Unmarshal(blob, cp)
-}
-
-// VerifyChecksum verifies that current checksum
-// of checkpointed Data is valid
-func (cp *Checkpoint) VerifyChecksum() error {
-	return cp.Checksum.Verify(cp.Data)
-}
-
-// GetPodResourceCheckpointInfo returns Pod Resource Allocation info states from checkpoint
-func (cp *Checkpoint) GetPodResourceCheckpointInfo() (*PodResourceCheckpointInfo, error) {
-	var data PodResourceCheckpointInfo
-	if err := json.Unmarshal([]byte(cp.Data), &data); err != nil {
-		return nil, err
+	var podList v1.PodList
+	if err := podList.Unmarshal(blob); err == nil && (len(podList.Items) > 0 || len(blob) == 0) {
+		cp.PodList = &podList
+		cp.migrated = false
+		return nil
 	}
 
-	return &data, nil
+	// Fallback to legacy JSON V1 format
+	var cpJSON checkpointJSONV1
+	if err := json.Unmarshal(blob, &cpJSON); err != nil {
+		return fmt.Errorf("failed to unmarshal checkpoint as protobuf or JSON V1: %w", err)
+	}
+	if err := cpJSON.Checksum.Verify(cpJSON.Data); err != nil {
+		return fmt.Errorf("checkpoint JSON V1 checksum mismatch: %w", err)
+	}
+
+	migratedPodList, err := migrateV1ToPodList(cpJSON.Data)
+	if err != nil {
+		return fmt.Errorf("failed to migrate JSON V1 checkpoint data to PodList: %w", err)
+	}
+
+	cp.PodList = migratedPodList
+	cp.migrated = true
+	return nil
+}
+
+// VerifyChecksum is a no-op for protobuf checkpoints.
+func (cp *Checkpoint) VerifyChecksum() error {
+	return nil
 }

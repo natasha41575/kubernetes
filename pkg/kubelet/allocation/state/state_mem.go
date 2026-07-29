@@ -21,26 +21,28 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
+	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 )
 
 type stateMemory struct {
 	sync.RWMutex
-	podResources PodResourceInfoMap
+	pods PodMap
 }
 
 var _ State = &stateMemory{}
 
-// NewStateMemory creates new State to track resources resourcesated to pods
-func NewStateMemory(logger klog.Logger, resources PodResourceInfoMap) State {
+// NewStateMemory creates new State to track resources allocated to pods
+func NewStateMemory(logger klog.Logger, resources PodMap) State {
 	if resources == nil {
-		resources = PodResourceInfoMap{}
+		resources = PodMap{}
 	}
 	logger.V(2).Info("Initialized new in-memory state store for pod resource information tracking")
 	return &stateMemory{
-		podResources: resources,
+		pods: resources.Clone(),
 	}
 }
 
@@ -48,16 +50,17 @@ func (s *stateMemory) GetContainerResources(podUID types.UID, containerName stri
 	s.RLock()
 	defer s.RUnlock()
 
-	resourceInfo, ok := s.podResources[podUID]
-	if !ok {
-		return v1.ResourceRequirements{}, ok
+	resourceInfo, ok := s.pods[podUID]
+	if !ok || resourceInfo == nil {
+		return v1.ResourceRequirements{}, false
 	}
 
-	resources, ok := resourceInfo.ContainerResources[containerName]
-	if !ok {
-		return v1.ResourceRequirements{}, ok
+	for c := range podutil.ContainerIter(&resourceInfo.Spec, podutil.InitContainers|podutil.Containers) {
+		if c.Name == containerName {
+			return *c.Resources.DeepCopy(), true
+		}
 	}
-	return *resources.DeepCopy(), ok
+	return v1.ResourceRequirements{}, false
 }
 
 // GetPodLevelResources returns current resources information at pod-level
@@ -65,12 +68,12 @@ func (s *stateMemory) GetPodLevelResources(podUID types.UID) (*v1.ResourceRequir
 	s.RLock()
 	defer s.RUnlock()
 
-	pr, ok := s.podResources[podUID]
-	if !ok {
-		return nil, ok
+	pr, ok := s.pods[podUID]
+	if !ok || pr == nil || pr.Spec.Resources == nil {
+		return nil, false
 	}
 
-	return pr.PodLevelResources.DeepCopy(), ok
+	return pr.Spec.Resources.DeepCopy(), true
 }
 
 // GetEmptyDirVolumeLimit returns current resources information for emptyDir volume
@@ -78,53 +81,81 @@ func (s *stateMemory) GetEmptyDirVolumeLimit(podUID types.UID, volumeName string
 	s.RLock()
 	defer s.RUnlock()
 
-	pr, ok := s.podResources[podUID]
-	if !ok {
-		return nil, ok
+	pr, ok := s.pods[podUID]
+	if !ok || pr == nil {
+		return nil, false
 	}
 
-	sizeLimit, ok := pr.EmptyDirVolumeLimits[volumeName]
-	if !ok {
-		return nil, ok
+	for _, vol := range pr.Spec.Volumes {
+		if vol.Name == volumeName && vol.EmptyDir != nil {
+			if vol.EmptyDir.SizeLimit == nil {
+				return nil, false
+			}
+			sizeLimitCopy := vol.EmptyDir.SizeLimit.DeepCopy()
+			return &sizeLimitCopy, true
+		}
 	}
-
-	sizeLimitCopy := sizeLimit.DeepCopy()
-	return &sizeLimitCopy, ok
+	return nil, false
 }
 
-func (s *stateMemory) GetPodResourceInfoMap() PodResourceInfoMap {
+func (s *stateMemory) GetPodMap() PodMap {
 	s.RLock()
 	defer s.RUnlock()
-	return s.podResources.Clone()
+	return s.pods.Clone()
 }
 
-func (s *stateMemory) GetPodResourceInfo(podUID types.UID) (PodResourceInfo, bool) {
+func (s *stateMemory) GetPod(podUID types.UID) (*v1.Pod, bool) {
 	s.RLock()
 	defer s.RUnlock()
 
-	resourceInfo, ok := s.podResources[podUID]
-	return resourceInfo, ok
+	resourceInfo, ok := s.pods[podUID]
+	if !ok || resourceInfo == nil {
+		return nil, false
+	}
+	return resourceInfo.DeepCopy(), true
 }
 
 func (s *stateMemory) SetContainerResources(logger klog.Logger, podUID types.UID, containerName string, resources v1.ResourceRequirements) error {
 	s.Lock()
 	defer s.Unlock()
 
-	podInfo, ok := s.podResources[podUID]
-	if !ok {
-		podInfo = PodResourceInfo{
-			ContainerResources: make(map[string]v1.ResourceRequirements),
+	podInfo, ok := s.pods[podUID]
+	if !ok || podInfo == nil {
+		podInfo = &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				UID: podUID,
+			},
+		}
+	} else {
+		podInfo = podInfo.DeepCopy()
+	}
+
+	found := false
+	for i, c := range podInfo.Spec.Containers {
+		if c.Name == containerName {
+			podInfo.Spec.Containers[i].Resources = *resources.DeepCopy()
+			found = true
+			break
 		}
 	}
-
-	if podInfo.ContainerResources == nil {
-		podInfo.ContainerResources = make(map[string]v1.ResourceRequirements)
+	if !found {
+		for i, c := range podInfo.Spec.InitContainers {
+			if c.Name == containerName {
+				podInfo.Spec.InitContainers[i].Resources = *resources.DeepCopy()
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		podInfo.Spec.Containers = append(podInfo.Spec.Containers, v1.Container{
+			Name:      containerName,
+			Resources: *resources.DeepCopy(),
+		})
 	}
 
-	podInfo.ContainerResources[containerName] = resources
-	s.podResources[podUID] = podInfo
-
-	logger.V(3).Info("Updated container resource information", "podUID", podUID, "containerName", containerName, "resources", resources)
+	s.pods[podUID] = podInfo
+	logger.V(3).Info("Updated container resource information in PodSpec", "podUID", podUID, "containerName", containerName, "resources", resources)
 	return nil
 }
 
@@ -132,16 +163,25 @@ func (s *stateMemory) SetPodLevelResources(logger klog.Logger, podUID types.UID,
 	s.Lock()
 	defer s.Unlock()
 
-	podInfo, ok := s.podResources[podUID]
-	if !ok {
-		podInfo.PodLevelResources = &v1.ResourceRequirements{}
+	podInfo, ok := s.pods[podUID]
+	if !ok || podInfo == nil {
+		podInfo = &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				UID: podUID,
+			},
+		}
+	} else {
+		podInfo = podInfo.DeepCopy()
 	}
 
-	podInfo.PodLevelResources = resources
+	if resources == nil {
+		podInfo.Spec.Resources = nil
+	} else {
+		podInfo.Spec.Resources = resources.DeepCopy()
+	}
+	s.pods[podUID] = podInfo
 
-	s.podResources[podUID] = podInfo
-
-	logger.V(3).Info("Updated pod-level resource info", "podUID", podUID, "resources", resources)
+	logger.V(3).Info("Updated pod-level resource info in PodSpec", "podUID", podUID, "resources", resources)
 	return nil
 }
 
@@ -150,37 +190,74 @@ func (s *stateMemory) SetEmptyDirVolumeLimit(podUID types.UID, volumeName string
 	s.Lock()
 	defer s.Unlock()
 
-	podInfo, ok := s.podResources[podUID]
-	if !ok {
-		podInfo = PodResourceInfo{
-			ContainerResources: make(map[string]v1.ResourceRequirements),
+	podInfo, ok := s.pods[podUID]
+	if !ok || podInfo == nil {
+		podInfo = &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				UID: podUID,
+			},
+		}
+	} else {
+		podInfo = podInfo.DeepCopy()
+	}
+
+	found := false
+	for i, vol := range podInfo.Spec.Volumes {
+		if vol.Name == volumeName && vol.EmptyDir != nil {
+			if limit == nil {
+				podInfo.Spec.Volumes[i].EmptyDir.SizeLimit = nil
+			} else {
+				limitCopy := limit.DeepCopy()
+				podInfo.Spec.Volumes[i].EmptyDir.SizeLimit = &limitCopy
+			}
+			found = true
+			break
 		}
 	}
-
-	if podInfo.EmptyDirVolumeLimits == nil {
-		podInfo.EmptyDirVolumeLimits = make(map[string]*resource.Quantity)
+	if !found {
+		var limitCopy *resource.Quantity
+		if limit != nil {
+			lc := limit.DeepCopy()
+			limitCopy = &lc
+		}
+		podInfo.Spec.Volumes = append(podInfo.Spec.Volumes, v1.Volume{
+			Name: volumeName,
+			VolumeSource: v1.VolumeSource{
+				EmptyDir: &v1.EmptyDirVolumeSource{
+					SizeLimit: limitCopy,
+				},
+			},
+		})
 	}
 
-	podInfo.EmptyDirVolumeLimits[volumeName] = limit
-	s.podResources[podUID] = podInfo
-
-	logger.V(3).Info("Updated emptyDir volume limit", "podUID", podUID, "volumeName", volumeName, "limit", limit)
+	s.pods[podUID] = podInfo
+	logger.V(3).Info("Updated emptyDir volume limit in PodSpec", "podUID", podUID, "volumeName", volumeName, "limit", limit)
 	return nil
 }
 
-func (s *stateMemory) SetPodResourceInfo(logger klog.Logger, podUID types.UID, resourceInfo PodResourceInfo) error {
+func (s *stateMemory) SetPod(logger klog.Logger, pod *v1.Pod) error {
 	s.Lock()
 	defer s.Unlock()
 
-	s.podResources[podUID] = resourceInfo
-	logger.V(3).Info("Updated pod resource information", "podUID", podUID, "information", resourceInfo)
+	if pod == nil {
+		return nil
+	}
+	s.pods[pod.UID] = &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			UID:       pod.UID,
+			Name:      pod.Name,
+			Namespace: pod.Namespace,
+		},
+		Spec: *pod.Spec.DeepCopy(),
+	}
+	logger.V(3).Info("Updated allocated pod", "podUID", pod.UID)
 	return nil
 }
 
 func (s *stateMemory) RemovePod(logger klog.Logger, podUID types.UID) error {
 	s.Lock()
 	defer s.Unlock()
-	delete(s.podResources, podUID)
+	delete(s.pods, podUID)
 	logger.V(3).Info("Deleted pod resource information", "podUID", podUID)
 	return nil
 }
@@ -189,9 +266,9 @@ func (s *stateMemory) RemoveOrphanedPods(remainingPods sets.Set[types.UID]) {
 	s.Lock()
 	defer s.Unlock()
 
-	for podUID := range s.podResources {
+	for podUID := range s.pods {
 		if _, ok := remainingPods[types.UID(podUID)]; !ok {
-			delete(s.podResources, podUID)
+			delete(s.pods, podUID)
 		}
 	}
 }
