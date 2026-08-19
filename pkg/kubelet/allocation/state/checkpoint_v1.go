@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager"
 	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager/checksum"
 )
 
@@ -40,6 +41,20 @@ type PodResourceCheckpointInfoV1 struct {
 type checkpointJSONV1 struct {
 	Data     string            `json:"data"`
 	Checksum checksum.Checksum `json:"checksum"`
+}
+
+var _ checkpointmanager.Checkpoint = &checkpointJSONV1{}
+
+func (cp *checkpointJSONV1) MarshalCheckpoint() ([]byte, error) {
+	return json.Marshal(cp)
+}
+
+func (cp *checkpointJSONV1) UnmarshalCheckpoint(blob []byte) error {
+	return json.Unmarshal(blob, cp)
+}
+
+func (cp *checkpointJSONV1) VerifyChecksum() error {
+	return cp.Checksum.Verify(cp.Data)
 }
 
 func migrateV1ToPodList(data string) (*v1.PodList, error) {

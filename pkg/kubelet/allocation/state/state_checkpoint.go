@@ -72,28 +72,40 @@ func NewStateCheckpoint(logger klog.Logger, stateDir, checkpointName string) (St
 // restores state from a checkpoint and creates it if it doesn't exist
 func restoreState(logger klog.Logger, checkpointManager checkpointmanager.CheckpointManager, checkpointName string) (PodMap, bool, error) {
 	checkpoint := &Checkpoint{}
-	if err := checkpointManager.GetCheckpoint(checkpointName, checkpoint); err != nil {
-		if err == errors.ErrCheckpointNotFound {
-			return nil, false, nil
+	err := checkpointManager.GetCheckpoint(checkpointName, checkpoint)
+	if err == nil {
+		podResourceAllocation := make(PodMap)
+		if checkpoint.PodList != nil {
+			for i := range checkpoint.PodList.Items {
+				pod := &checkpoint.PodList.Items[i]
+				podResourceAllocation[pod.UID] = pod.DeepCopy()
+			}
 		}
-		return nil, false, err
+		logger.V(2).Info("State checkpoint: restored pod resource state from checkpoint")
+		return podResourceAllocation, false, nil
+	}
+	if err == errors.ErrCheckpointNotFound {
+		return nil, false, nil
 	}
 
-	podResourceAllocation := make(PodMap)
-	if checkpoint.PodList != nil {
-		for i := range checkpoint.PodList.Items {
-			pod := &checkpoint.PodList.Items[i]
+	// Fallback to legacy JSON V1 format
+	logger.Info("Could not load protobuf checkpoint, trying legacy JSON V1 fallback", "err", err)
+	checkpointV1 := &checkpointJSONV1{}
+	if errV1 := checkpointManager.GetCheckpoint(checkpointName, checkpointV1); errV1 == nil {
+		podList, errMigrate := migrateV1ToPodList(checkpointV1.Data)
+		if errMigrate != nil {
+			return nil, false, fmt.Errorf("failed to migrate legacy JSON V1 checkpoint: %w", errMigrate)
+		}
+		podResourceAllocation := make(PodMap)
+		for i := range podList.Items {
+			pod := &podList.Items[i]
 			podResourceAllocation[pod.UID] = pod.DeepCopy()
 		}
+		logger.V(2).Info("State checkpoint: restored and migrated pod resource state from legacy JSON V1 checkpoint")
+		return podResourceAllocation, true, nil
 	}
 
-	if checkpoint.migrated {
-		logger.V(2).Info("State checkpoint: restored and migrated pod resource state to V2 format checkpoint")
-	} else {
-		logger.V(2).Info("State checkpoint: restored pod resource state from V2 checkpoint")
-	}
-
-	return podResourceAllocation, checkpoint.migrated, nil
+	return nil, false, err
 }
 
 // saves state to a checkpoint, caller is responsible for locking

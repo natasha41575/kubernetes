@@ -17,9 +17,6 @@ limitations under the License.
 package state
 
 import (
-	"encoding/json"
-	"fmt"
-
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager"
 )
@@ -28,8 +25,8 @@ var _ checkpointmanager.Checkpoint = &Checkpoint{}
 
 // Checkpoint represents a structure to store pod resource allocation checkpoint data as a Protobuf PodList.
 type Checkpoint struct {
-	PodList  *v1.PodList
-	migrated bool
+	// PodList is a serialized list of pods on the node.
+	PodList *v1.PodList
 }
 
 // NewCheckpoint creates a new checkpoint from a PodList
@@ -46,31 +43,13 @@ func (cp *Checkpoint) MarshalCheckpoint() ([]byte, error) {
 	return cp.PodList.Marshal()
 }
 
-// UnmarshalCheckpoint unmarshals checkpoint trying Protobuf first, then falling back to legacy JSON V1 format.
+// UnmarshalCheckpoint unmarshals checkpoint from Protobuf.
 func (cp *Checkpoint) UnmarshalCheckpoint(blob []byte) error {
 	var podList v1.PodList
-	if err := podList.Unmarshal(blob); err == nil && (len(podList.Items) > 0 || len(blob) == 0) {
-		cp.PodList = &podList
-		cp.migrated = false
-		return nil
+	if err := podList.Unmarshal(blob); err != nil {
+		return err
 	}
-
-	// Fallback to legacy JSON V1 format
-	var cpJSON checkpointJSONV1
-	if err := json.Unmarshal(blob, &cpJSON); err != nil {
-		return fmt.Errorf("failed to unmarshal checkpoint as protobuf or JSON V1: %w", err)
-	}
-	if err := cpJSON.Checksum.Verify(cpJSON.Data); err != nil {
-		return fmt.Errorf("checkpoint JSON V1 checksum mismatch: %w", err)
-	}
-
-	migratedPodList, err := migrateV1ToPodList(cpJSON.Data)
-	if err != nil {
-		return fmt.Errorf("failed to migrate JSON V1 checkpoint data to PodList: %w", err)
-	}
-
-	cp.PodList = migratedPodList
-	cp.migrated = true
+	cp.PodList = &podList
 	return nil
 }
 
