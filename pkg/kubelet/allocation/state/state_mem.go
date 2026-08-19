@@ -36,13 +36,13 @@ type stateMemory struct {
 var _ State = &stateMemory{}
 
 // NewStateMemory creates new State to track resources allocated to pods
-func NewStateMemory(logger klog.Logger, resources PodMap) State {
-	if resources == nil {
-		resources = PodMap{}
+func NewStateMemory(logger klog.Logger, pods PodMap) State {
+	if pods == nil {
+		pods = PodMap{}
 	}
 	logger.V(2).Info("Initialized new in-memory state store for pod resource information tracking")
 	return &stateMemory{
-		pods: resources.Clone(),
+		pods: pods.Clone(),
 	}
 }
 
@@ -50,12 +50,12 @@ func (s *stateMemory) GetContainerResources(podUID types.UID, containerName stri
 	s.RLock()
 	defer s.RUnlock()
 
-	resourceInfo, ok := s.pods[podUID]
-	if !ok || resourceInfo == nil {
+	pod, ok := s.pods[podUID]
+	if !ok || pod == nil {
 		return v1.ResourceRequirements{}, false
 	}
 
-	for c := range podutil.ContainerIter(&resourceInfo.Spec, podutil.InitContainers|podutil.Containers) {
+	for c := range podutil.ContainerIter(&pod.Spec, podutil.InitContainers|podutil.Containers) {
 		if c.Name == containerName {
 			return *c.Resources.DeepCopy(), true
 		}
@@ -68,12 +68,12 @@ func (s *stateMemory) GetPodLevelResources(podUID types.UID) (*v1.ResourceRequir
 	s.RLock()
 	defer s.RUnlock()
 
-	pr, ok := s.pods[podUID]
-	if !ok || pr == nil || pr.Spec.Resources == nil {
+	pod, ok := s.pods[podUID]
+	if !ok || pod == nil || pod.Spec.Resources == nil {
 		return nil, false
 	}
 
-	return pr.Spec.Resources.DeepCopy(), true
+	return pod.Spec.Resources.DeepCopy(), true
 }
 
 // GetEmptyDirVolumeLimit returns current resources information for emptyDir volume
@@ -81,14 +81,14 @@ func (s *stateMemory) GetEmptyDirVolumeLimit(podUID types.UID, volumeName string
 	s.RLock()
 	defer s.RUnlock()
 
-	pr, ok := s.pods[podUID]
-	if !ok || pr == nil {
+	pod, ok := s.pods[podUID]
+	if !ok || pod == nil {
 		return nil, false
 	}
 
-	for _, vol := range pr.Spec.Volumes {
+	for _, vol := range pod.Spec.Volumes {
 		if vol.Name == volumeName && vol.EmptyDir != nil {
-			if vol.EmptyDir.SizeLimit == nil {
+			if vol.EmptyDir.SizeLimit == nil || vol.EmptyDir.SizeLimit.IsZero() {
 				return nil, false
 			}
 			sizeLimitCopy := vol.EmptyDir.SizeLimit.DeepCopy()
@@ -108,53 +108,49 @@ func (s *stateMemory) GetPod(podUID types.UID) (*v1.Pod, bool) {
 	s.RLock()
 	defer s.RUnlock()
 
-	resourceInfo, ok := s.pods[podUID]
-	if !ok || resourceInfo == nil {
+	pod, ok := s.pods[podUID]
+	if !ok || pod == nil {
 		return nil, false
 	}
-	return resourceInfo.DeepCopy(), true
+	return pod.DeepCopy(), true
 }
 
-func (s *stateMemory) SetContainerResources(logger klog.Logger, podUID types.UID, containerName string, resources v1.ResourceRequirements) error {
+func (s *stateMemory) SetContainerResources(logger klog.Logger, podUID types.UID, containerName string, containerType podutil.ContainerType, resources v1.ResourceRequirements) error {
 	s.Lock()
 	defer s.Unlock()
 
-	podInfo, ok := s.pods[podUID]
-	if !ok || podInfo == nil {
-		podInfo = &v1.Pod{
+	pod, ok := s.pods[podUID]
+	if !ok || pod == nil {
+		pod = &v1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				UID: podUID,
 			},
 		}
 	} else {
-		podInfo = podInfo.DeepCopy()
+		pod = pod.DeepCopy()
 	}
 
 	found := false
-	for i, c := range podInfo.Spec.Containers {
+	for c := range podutil.ContainerIter(&pod.Spec, podutil.InitContainers|podutil.Containers) {
 		if c.Name == containerName {
-			podInfo.Spec.Containers[i].Resources = *resources.DeepCopy()
+			c.Resources = *resources.DeepCopy()
 			found = true
 			break
 		}
 	}
 	if !found {
-		for i, c := range podInfo.Spec.InitContainers {
-			if c.Name == containerName {
-				podInfo.Spec.InitContainers[i].Resources = *resources.DeepCopy()
-				found = true
-				break
-			}
-		}
-	}
-	if !found {
-		podInfo.Spec.Containers = append(podInfo.Spec.Containers, v1.Container{
+		newContainer := v1.Container{
 			Name:      containerName,
 			Resources: *resources.DeepCopy(),
-		})
+		}
+		if containerType == podutil.InitContainers {
+			pod.Spec.InitContainers = append(pod.Spec.InitContainers, newContainer)
+		} else {
+			pod.Spec.Containers = append(pod.Spec.Containers, newContainer)
+		}
 	}
 
-	s.pods[podUID] = podInfo
+	s.pods[podUID] = pod
 	logger.V(3).Info("Updated container resource information in PodSpec", "podUID", podUID, "containerName", containerName, "resources", resources)
 	return nil
 }
@@ -210,6 +206,7 @@ func (s *stateMemory) SetEmptyDirVolumeLimit(podUID types.UID, volumeName string
 				limitCopy := limit.DeepCopy()
 				podInfo.Spec.Volumes[i].EmptyDir.SizeLimit = &limitCopy
 			}
+			podInfo.Spec.Volumes[i].EmptyDir.Medium = v1.StorageMediumMemory
 			found = true
 			break
 		}
@@ -224,6 +221,7 @@ func (s *stateMemory) SetEmptyDirVolumeLimit(podUID types.UID, volumeName string
 			Name: volumeName,
 			VolumeSource: v1.VolumeSource{
 				EmptyDir: &v1.EmptyDirVolumeSource{
+					Medium:    v1.StorageMediumMemory,
 					SizeLimit: limitCopy,
 				},
 			},

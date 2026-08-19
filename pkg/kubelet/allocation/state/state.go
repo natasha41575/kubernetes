@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
+	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 )
 
 // PodMap maps pod UIDs to their corresponding *v1.Pod,
@@ -49,7 +50,7 @@ type Reader interface {
 }
 
 type writer interface {
-	SetContainerResources(logger klog.Logger, podUID types.UID, containerName string, resources v1.ResourceRequirements) error
+	SetContainerResources(logger klog.Logger, podUID types.UID, containerName string, containerType podutil.ContainerType, resources v1.ResourceRequirements) error
 	SetPod(logger klog.Logger, pod *v1.Pod) error
 	SetPodLevelResources(logger klog.Logger, podUID types.UID, alloc *v1.ResourceRequirements) error
 	SetEmptyDirVolumeLimit(podUID types.UID, volumeName string, limit *resource.Quantity) error

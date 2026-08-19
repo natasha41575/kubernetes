@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
+	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager"
 	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager/errors"
 )
@@ -46,7 +47,7 @@ func NewStateCheckpoint(logger klog.Logger, stateDir, checkpointName string) (St
 		return nil, fmt.Errorf("failed to initialize checkpoint manager for pod resource information tracking: %w", err)
 	}
 
-	podResourceAllocation, migrated, err := restoreState(logger, checkpointManager, checkpointName)
+	pra, migrated, err := restoreState(logger, checkpointManager, checkpointName)
 	if err != nil {
 		//lint:ignore ST1005 user-facing error message
 		return nil, fmt.Errorf("could not restore state from checkpoint: %w, please drain this node and delete pod resource information checkpoint file %q before restarting Kubelet",
@@ -54,7 +55,7 @@ func NewStateCheckpoint(logger klog.Logger, stateDir, checkpointName string) (St
 	}
 
 	stateCheckpoint := &stateCheckpoint{
-		cache:             NewStateMemory(logger, podResourceAllocation),
+		cache:             NewStateMemory(logger, pra),
 		checkpointManager: checkpointManager,
 		checkpointName:    checkpointName,
 	}
@@ -74,15 +75,14 @@ func restoreState(logger klog.Logger, checkpointManager checkpointmanager.Checkp
 	checkpoint := &Checkpoint{}
 	err := checkpointManager.GetCheckpoint(checkpointName, checkpoint)
 	if err == nil {
-		podResourceAllocation := make(PodMap)
+		podMap := make(PodMap)
 		if checkpoint.PodList != nil {
-			for i := range checkpoint.PodList.Items {
-				pod := &checkpoint.PodList.Items[i]
-				podResourceAllocation[pod.UID] = pod.DeepCopy()
+			for _, pod := range checkpoint.PodList.Items {
+				podMap[pod.UID] = pod.DeepCopy()
 			}
 		}
 		logger.V(2).Info("State checkpoint: restored pod resource state from checkpoint")
-		return podResourceAllocation, false, nil
+		return podMap, false, nil
 	}
 	if err == errors.ErrCheckpointNotFound {
 		return nil, false, nil
@@ -90,19 +90,18 @@ func restoreState(logger klog.Logger, checkpointManager checkpointmanager.Checkp
 
 	// Fallback to legacy JSON V1 format
 	logger.Info("Could not load protobuf checkpoint, trying legacy JSON V1 fallback", "err", err)
-	checkpointV1 := &checkpointJSONV1{}
+	checkpointV1 := &checkpointV1{}
 	if errV1 := checkpointManager.GetCheckpoint(checkpointName, checkpointV1); errV1 == nil {
-		podList, errMigrate := migrateV1ToPodList(checkpointV1.Data)
+		podList, errMigrate := migrateV1ToV2(checkpointV1.Data)
 		if errMigrate != nil {
 			return nil, false, fmt.Errorf("failed to migrate legacy JSON V1 checkpoint: %w", errMigrate)
 		}
-		podResourceAllocation := make(PodMap)
-		for i := range podList.Items {
-			pod := &podList.Items[i]
-			podResourceAllocation[pod.UID] = pod.DeepCopy()
+		podMap := make(PodMap)
+		for _, pod := range podList.Items {
+			podMap[pod.UID] = pod.DeepCopy()
 		}
 		logger.V(2).Info("State checkpoint: restored and migrated pod resource state from legacy JSON V1 checkpoint")
-		return podResourceAllocation, true, nil
+		return podMap, true, nil
 	}
 
 	return nil, false, err
@@ -112,16 +111,14 @@ func restoreState(logger klog.Logger, checkpointManager checkpointmanager.Checkp
 func (sc *stateCheckpoint) storeState(logger klog.Logger) error {
 	podResourceAllocation := sc.cache.GetPodMap()
 
-	podList := &v1.PodList{
-		Items: make([]v1.Pod, 0, len(podResourceAllocation)),
-	}
+	podList := &v1.PodList{Items: make([]v1.Pod, 0, len(podResourceAllocation))}
 	for _, pod := range podResourceAllocation {
 		if pod != nil {
 			podList.Items = append(podList.Items, *pod.DeepCopy())
 		}
 	}
 
-	checkpoint := NewCheckpoint(podList)
+	checkpoint := &Checkpoint{PodList: podList}
 	err := sc.checkpointManager.CreateCheckpoint(sc.checkpointName, checkpoint)
 	if err != nil {
 		logger.Error(err, "Failed to save pod resource information checkpoint")
@@ -166,10 +163,10 @@ func (sc *stateCheckpoint) GetPod(podUID types.UID) (*v1.Pod, bool) {
 }
 
 // SetContainerResources sets resources information for a pod's container
-func (sc *stateCheckpoint) SetContainerResources(logger klog.Logger, podUID types.UID, containerName string, resources v1.ResourceRequirements) error {
+func (sc *stateCheckpoint) SetContainerResources(logger klog.Logger, podUID types.UID, containerName string, containerType podutil.ContainerType, resources v1.ResourceRequirements) error {
 	sc.mux.Lock()
 	defer sc.mux.Unlock()
-	err := sc.cache.SetContainerResources(logger, podUID, containerName, resources)
+	err := sc.cache.SetContainerResources(logger, podUID, containerName, containerType, resources)
 	if err != nil {
 		return err
 	}
@@ -253,7 +250,7 @@ func (sc *noopStateCheckpoint) GetPod(_ types.UID) (*v1.Pod, bool) {
 	return nil, false
 }
 
-func (sc *noopStateCheckpoint) SetContainerResources(_ klog.Logger, _ types.UID, _ string, _ v1.ResourceRequirements) error {
+func (sc *noopStateCheckpoint) SetContainerResources(_ klog.Logger, _ types.UID, _ string, _ podutil.ContainerType, _ v1.ResourceRequirements) error {
 	return nil
 }
 

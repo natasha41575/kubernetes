@@ -3137,7 +3137,7 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 	setupActuatedResources := func(pod *v1.Pod, container *v1.Container, actuatedResources v1.ResourceRequirements) {
 		actuatedContainer := container.DeepCopy()
 		actuatedContainer.Resources = actuatedResources
-		require.NoError(t, m.actuatedState.SetContainerResources(logger, pod.UID, actuatedContainer.Name, actuatedContainer.Resources))
+		require.NoError(t, m.actuatedState.SetContainerResources(logger, pod.UID, actuatedContainer.Name, podutil.Containers, actuatedContainer.Resources))
 	}
 
 	setupActuatedPodResources := func(pod *v1.Pod, actuatedPodResources *v1.ResourceRequirements) {
@@ -6119,7 +6119,7 @@ func TestIsPodResizeInProgress(t *testing.T) {
 				if c.actuated != nil {
 					actuatedContainer := container.DeepCopy()
 					actuatedContainer.Resources = mkRequirements(*c.actuated)
-					require.NoError(t, m.actuatedState.SetContainerResources(logger, pod.UID, actuatedContainer.Name, actuatedContainer.Resources))
+					require.NoError(t, m.actuatedState.SetContainerResources(logger, pod.UID, actuatedContainer.Name, podutil.Containers, actuatedContainer.Resources))
 
 					fetched, found := m.actuatedState.GetContainerResources(pod.UID, container.Name)
 					require.True(t, found)
@@ -6856,4 +6856,78 @@ func TestInitializeActuatedPod_HydrateMigratedState(t *testing.T) {
 	// assert actuated resources were preserved, ignoring allocatedPod's desired resources
 	assert.True(t, actuatedPod.Spec.Containers[0].Resources.Requests[v1.ResourceCPU].Equal(resource.MustParse("100m")), "CPU request should remain at actuated value")
 	assert.True(t, actuatedPod.Spec.Containers[0].Resources.Requests[v1.ResourceMemory].Equal(resource.MustParse("128Mi")), "Memory request should remain at actuated value")
+}
+
+func TestInitializeActuatedPod_HydrateMigratedState_NoContainersInV1(t *testing.T) {
+	logger, tCtx := ktesting.NewTestContext(t)
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingMemoryBackedVolumes, true)
+	_, _, m, err := createTestRuntimeManager(tCtx)
+	require.NoError(t, err)
+
+	volLimit := resource.MustParse("256Mi")
+	allocatedPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			UID: "pod-no-container-res",
+		},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Name:  "c1",
+					Image: "nginx:latest",
+				},
+			},
+			Volumes: []v1.Volume{
+				{
+					Name: "mem-vol",
+					VolumeSource: v1.VolumeSource{
+						EmptyDir: &v1.EmptyDirVolumeSource{
+							Medium:    v1.StorageMediumMemory,
+							SizeLimit: &volLimit,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// simulate a migrated V1 checkpoint that had 0 container requests (only a volume limit)
+	migratedPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			UID: allocatedPod.UID,
+		},
+		Spec: v1.PodSpec{
+			Volumes: []v1.Volume{
+				{
+					Name: "mem-vol",
+					VolumeSource: v1.VolumeSource{
+						EmptyDir: &v1.EmptyDirVolumeSource{
+							Medium:    v1.StorageMediumMemory,
+							SizeLimit: &volLimit,
+						},
+					},
+				},
+			},
+		},
+	}
+	err = m.actuatedState.SetPod(logger, migratedPod)
+	require.NoError(t, err)
+
+	// execute InitializeActuatedPod
+	m.InitializeActuatedPod(logger, allocatedPod)
+
+	actuatedPod, found := m.actuatedState.GetPod(allocatedPod.UID)
+	require.True(t, found)
+	require.NotNil(t, actuatedPod)
+
+	// assert containers and non-resource metadata were hydrated
+	require.Len(t, actuatedPod.Spec.Containers, 1)
+	assert.Equal(t, "c1", actuatedPod.Spec.Containers[0].Name)
+	assert.Equal(t, "nginx:latest", actuatedPod.Spec.Containers[0].Image)
+
+	// assert volume limit was preserved
+	require.Len(t, actuatedPod.Spec.Volumes, 1)
+	assert.Equal(t, "mem-vol", actuatedPod.Spec.Volumes[0].Name)
+	require.NotNil(t, actuatedPod.Spec.Volumes[0].EmptyDir)
+	assert.True(t, volLimit.Equal(*actuatedPod.Spec.Volumes[0].EmptyDir.SizeLimit))
 }

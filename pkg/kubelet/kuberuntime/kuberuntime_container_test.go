@@ -41,6 +41,7 @@ import (
 	"k8s.io/kubernetes/test/utils/ktesting"
 
 	kubelettypes "k8s.io/kubelet/pkg/types"
+	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/kubelet/cm"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
@@ -490,7 +491,7 @@ func TestToKubeContainerStatusWithResources(t *testing.T) {
 			}
 
 			if test.actuatedResources != nil {
-				require.NoError(t, m.actuatedState.SetContainerResources(logger, podUID, meta.Name, *test.actuatedResources))
+				require.NoError(t, m.actuatedState.SetContainerResources(logger, podUID, meta.Name, podutil.Containers, *test.actuatedResources))
 				t.Cleanup(func() { _ = m.actuatedState.RemovePod(logger, podUID) })
 			}
 

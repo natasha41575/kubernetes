@@ -426,7 +426,14 @@ func (m *kubeGenericRuntimeManager) setActuatedContainerResources(logger klog.Lo
 		containerResources = *containerResources.DeepCopy()
 		containerResources.Limits = kubeutil.GetLimits(&kubeutil.ResourceOpts{PodResources: pod.Spec.Resources, ContainerResources: &container.Resources})
 	}
-	return m.actuatedState.SetContainerResources(logger, pod.UID, container.Name, containerResources)
+	containerType := podutil.Containers
+	for _, ic := range pod.Spec.InitContainers {
+		if ic.Name == container.Name {
+			containerType = podutil.InitContainers
+			break
+		}
+	}
+	return m.actuatedState.SetContainerResources(logger, pod.UID, container.Name, containerType, containerResources)
 }
 
 func (m *kubeGenericRuntimeManager) updatePodSandboxResources(ctx context.Context, sandboxID string, pod *v1.Pod, podResources *cm.ResourceConfig) error {

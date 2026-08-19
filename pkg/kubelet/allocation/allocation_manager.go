@@ -430,30 +430,30 @@ func (m *manager) UpdatePodFromAllocation(pod *v1.Pod) (*v1.Pod, bool) {
 		return pod, false
 	}
 
-	return UpdatePodFromStoredState(pod, allocated)
+	return UpdatePodFromCheckpoint(pod, allocated)
 }
 
-// UpdatePodFromStoredState overwrites the pod's resource requirements (container resources,
-// pod-level resources, and memory-backed emptyDir volume size limits) with the values from stored pod state.
+// UpdatePodFromCheckpoint overwrites the pod's resource requirements (container resources,
+// pod-level resources, and memory-backed emptyDir volume size limits) with the values from checkpointed pod state.
 // This function does a deep copy of the pod only if updates are needed.
-func UpdatePodFromStoredState(pod *v1.Pod, storedPod *v1.Pod) (*v1.Pod, bool) {
+func UpdatePodFromCheckpoint(pod *v1.Pod, storedPod *v1.Pod) (*v1.Pod, bool) {
 	if pod == nil || storedPod == nil {
 		return pod, false
 	}
 
 	updated := false
 	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodLevelResourcesVerticalScaling) {
-		pod, updated = updatePodLevelResourcesFromStoredState(pod, storedPod)
+		pod, updated = updatePodLevelResourcesFromCheckpoint(pod, storedPod)
 	}
-	pod, updated = updateContainerResourcesFromStoredState(pod, storedPod, updated)
+	pod, updated = updateContainerResourcesFromCheckpoint(pod, storedPod, updated)
 	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingMemoryBackedVolumes) {
-		pod, updated = updateEmptyDirVolumeLimitsFromStoredState(pod, storedPod, updated)
+		pod, updated = updateEmptyDirVolumeLimitsFromCheckpoint(pod, storedPod, updated)
 	}
 
 	return pod, updated
 }
 
-func updateContainerResourcesFromStoredState(pod *v1.Pod, storedPod *v1.Pod, alreadyUpdated bool) (*v1.Pod, bool) {
+func updateContainerResourcesFromCheckpoint(pod *v1.Pod, storedPod *v1.Pod, alreadyUpdated bool) (*v1.Pod, bool) {
 	updated := alreadyUpdated
 	containerAlloc := func(c v1.Container) (v1.ResourceRequirements, bool) {
 		if storedPod == nil {
@@ -476,13 +476,13 @@ func updateContainerResourcesFromStoredState(pod *v1.Pod, storedPod *v1.Pod, alr
 	}
 
 	for i, c := range pod.Spec.Containers {
-		if cAlloc, found := containerAlloc(c); found {
+		if cAlloc, updated := containerAlloc(c); updated {
 			// Stored state differs from pod spec, update
 			pod.Spec.Containers[i].Resources = cAlloc
 		}
 	}
 	for i, c := range pod.Spec.InitContainers {
-		if cAlloc, found := containerAlloc(c); found {
+		if cAlloc, updated := containerAlloc(c); updated {
 			// Stored state differs from pod spec, update
 			pod.Spec.InitContainers[i].Resources = cAlloc
 		}
@@ -490,7 +490,7 @@ func updateContainerResourcesFromStoredState(pod *v1.Pod, storedPod *v1.Pod, alr
 	return pod, updated
 }
 
-func updatePodLevelResourcesFromStoredState(pod *v1.Pod, storedPod *v1.Pod) (*v1.Pod, bool) {
+func updatePodLevelResourcesFromCheckpoint(pod *v1.Pod, storedPod *v1.Pod) (*v1.Pod, bool) {
 	pAlloc := storedPod.Spec.Resources
 	if pAlloc == nil {
 		return pod, false
@@ -504,7 +504,7 @@ func updatePodLevelResourcesFromStoredState(pod *v1.Pod, storedPod *v1.Pod) (*v1
 	return pod, false
 }
 
-func updateEmptyDirVolumeLimitsFromStoredState(pod *v1.Pod, storedPod *v1.Pod, alreadyUpdated bool) (*v1.Pod, bool) {
+func updateEmptyDirVolumeLimitsFromCheckpoint(pod *v1.Pod, storedPod *v1.Pod, alreadyUpdated bool) (*v1.Pod, bool) {
 	updated := alreadyUpdated
 	for i, vol := range pod.Spec.Volumes {
 		if !VolHasMemoryBackedEmptyDirSizeLimit(&vol) {
@@ -519,7 +519,7 @@ func updateEmptyDirVolumeLimitsFromStoredState(pod *v1.Pod, storedPod *v1.Pod, a
 			}
 		}
 
-		if alloc != nil && (vol.EmptyDir.SizeLimit == nil || alloc.Cmp(*vol.EmptyDir.SizeLimit) != 0) {
+		if alloc != nil && alloc.Cmp(*vol.EmptyDir.SizeLimit) != 0 {
 			if !updated {
 				pod = pod.DeepCopy()
 				updated = true

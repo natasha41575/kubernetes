@@ -29,13 +29,7 @@ type Checkpoint struct {
 	PodList *v1.PodList
 }
 
-// NewCheckpoint creates a new checkpoint from a PodList
-func NewCheckpoint(podList *v1.PodList) *Checkpoint {
-	return &Checkpoint{
-		PodList: podList,
-	}
-}
-
+// MarshalCheckpoint marshals checkpoint to Protobuf.
 func (cp *Checkpoint) MarshalCheckpoint() ([]byte, error) {
 	if cp.PodList == nil {
 		cp.PodList = &v1.PodList{}

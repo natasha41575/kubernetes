@@ -197,151 +197,150 @@ func TestUpdatePodFromAllocation(t *testing.T) {
 		expectUpdate                                        bool
 		inPlacePodLevelResizeEnabled                        bool
 		inPlacePodVerticalScalingMemoryBackedVolumesEnabled bool
-	}{
-		{
-			name: "steady state",
-			pod:  pod,
-			allocated: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{Name: "c1", Resources: *pod.Spec.Containers[0].Resources.DeepCopy()},
-						{Name: "c2", Resources: *pod.Spec.Containers[1].Resources.DeepCopy()},
-					},
-					InitContainers: []v1.Container{
-						{Name: "c1-restartable-init", Resources: *pod.Spec.InitContainers[0].Resources.DeepCopy()},
-						{Name: "c1-init", Resources: *pod.Spec.InitContainers[1].Resources.DeepCopy()},
-					},
+	}{{
+		name: "steady state",
+		pod:  pod,
+		allocated: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "c1", Resources: *pod.Spec.Containers[0].Resources.DeepCopy()},
+					{Name: "c2", Resources: *pod.Spec.Containers[1].Resources.DeepCopy()},
+				},
+				InitContainers: []v1.Container{
+					{Name: "c1-restartable-init", Resources: *pod.Spec.InitContainers[0].Resources.DeepCopy()},
+					{Name: "c1-init", Resources: *pod.Spec.InitContainers[1].Resources.DeepCopy()},
 				},
 			},
-			expectUpdate: false,
-		}, {
-			name:         "no allocations",
-			pod:          pod,
-			allocated:    nil,
-			expectUpdate: false,
-		}, {
-			name: "missing container allocation",
-			pod:  pod,
-			allocated: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{Name: "c2", Resources: *pod.Spec.Containers[1].Resources.DeepCopy()},
-					},
-				},
-			},
-			expectUpdate: false,
-		}, {
-			name: "resized container",
-			pod:  pod,
-			allocated: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{Name: "c1", Resources: *resizedPod.Spec.Containers[0].Resources.DeepCopy()},
-						{Name: "c2", Resources: *resizedPod.Spec.Containers[1].Resources.DeepCopy()},
-					},
-					InitContainers: []v1.Container{
-						{Name: "c1-restartable-init", Resources: *resizedPod.Spec.InitContainers[0].Resources.DeepCopy()},
-						{Name: "c1-init", Resources: *resizedPod.Spec.InitContainers[1].Resources.DeepCopy()},
-					},
-				},
-			},
-			expectUpdate: true,
-			expectPod:    resizedPod,
-		}, {
-			name: "resized pod-level allocation",
-			pod:  pod,
-			allocated: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{Name: "c1", Resources: *resizedPod.Spec.Containers[0].Resources.DeepCopy()},
-						{Name: "c2", Resources: *resizedPod.Spec.Containers[1].Resources.DeepCopy()},
-					},
-					InitContainers: []v1.Container{
-						{Name: "c1-restartable-init", Resources: *resizedPod.Spec.InitContainers[0].Resources.DeepCopy()},
-						{Name: "c1-init", Resources: *resizedPod.Spec.InitContainers[1].Resources.DeepCopy()},
-					},
-					Resources: resizedPodWithPodLevelResources.Spec.Resources.DeepCopy(),
-				},
-			},
-			expectUpdate:                 true,
-			expectPod:                    resizedPodWithPodLevelResources,
-			inPlacePodLevelResizeEnabled: true,
-		}, {
-			name: "resized pod-level resources and allocation",
-			pod:  podWithPodLevelResources,
-			allocated: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{Name: "c1", Resources: *resizedPod.Spec.Containers[0].Resources.DeepCopy()},
-						{Name: "c2", Resources: *resizedPod.Spec.Containers[1].Resources.DeepCopy()},
-					},
-					InitContainers: []v1.Container{
-						{Name: "c1-restartable-init", Resources: *resizedPod.Spec.InitContainers[0].Resources.DeepCopy()},
-						{Name: "c1-init", Resources: *resizedPod.Spec.InitContainers[1].Resources.DeepCopy()},
-					},
-					Resources: resizedPodWithPodLevelResources.Spec.Resources.DeepCopy(),
-				},
-			},
-			expectUpdate:                 true,
-			expectPod:                    resizedPodWithPodLevelResources,
-			inPlacePodLevelResizeEnabled: true,
-		}, {
-			name: "resized pod-level resources and no container resources",
-			pod:  podWithoutContainerResources,
-			allocated: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{Name: "c1", Resources: *resizedPod.Spec.Containers[0].Resources.DeepCopy()},
-						{Name: "c2", Resources: *resizedPod.Spec.Containers[1].Resources.DeepCopy()},
-					},
-					InitContainers: []v1.Container{
-						{Name: "c1-restartable-init", Resources: *resizedPod.Spec.InitContainers[0].Resources.DeepCopy()},
-						{Name: "c1-init", Resources: *resizedPod.Spec.InitContainers[1].Resources.DeepCopy()},
-					},
-					Resources: resizedPodWithPodLevelResources.Spec.Resources.DeepCopy(),
-				},
-			},
-			expectUpdate:                 true,
-			expectPod:                    resizedPodWithPodLevelResources,
-			inPlacePodLevelResizeEnabled: true,
-		}, {
-			name: "pod-level resources with overhead, checkpoint matches spec (no overhead stored)",
-			pod:  podWithPodLevelResourcesAndOverhead,
-			allocated: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
-				Spec: v1.PodSpec{
-					Resources: podWithPodLevelResourcesAndOverhead.Spec.Resources.DeepCopy(),
-				},
-			},
-			expectUpdate:                 false,
-			inPlacePodLevelResizeEnabled: true,
-		}, {
-			name: "resized pod-level resources with feature gate disabled",
-			pod:  podWithPodLevelResources,
-			allocated: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{Name: "c1", Resources: *pod.Spec.Containers[0].Resources.DeepCopy()},
-						{Name: "c2", Resources: *pod.Spec.Containers[1].Resources.DeepCopy()},
-					},
-					InitContainers: []v1.Container{
-						{Name: "c1-restartable-init", Resources: *pod.Spec.InitContainers[0].Resources.DeepCopy()},
-						{Name: "c1-init", Resources: *pod.Spec.InitContainers[1].Resources.DeepCopy()},
-					},
-					Resources: resizedPod.Spec.Resources.DeepCopy(),
-				},
-			},
-			expectUpdate:                 false,
-			expectPod:                    podWithPodLevelResources,
-			inPlacePodLevelResizeEnabled: false,
 		},
+		expectUpdate: false,
+	}, {
+		name:         "no allocations",
+		pod:          pod,
+		allocated:    nil,
+		expectUpdate: false,
+	}, {
+		name: "missing container allocation",
+		pod:  pod,
+		allocated: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "c2", Resources: *pod.Spec.Containers[1].Resources.DeepCopy()},
+				},
+			},
+		},
+		expectUpdate: false,
+	}, {
+		name: "resized container",
+		pod:  pod,
+		allocated: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "c1", Resources: *resizedPod.Spec.Containers[0].Resources.DeepCopy()},
+					{Name: "c2", Resources: *resizedPod.Spec.Containers[1].Resources.DeepCopy()},
+				},
+				InitContainers: []v1.Container{
+					{Name: "c1-restartable-init", Resources: *resizedPod.Spec.InitContainers[0].Resources.DeepCopy()},
+					{Name: "c1-init", Resources: *resizedPod.Spec.InitContainers[1].Resources.DeepCopy()},
+				},
+			},
+		},
+		expectUpdate: true,
+		expectPod:    resizedPod,
+	}, {
+		name: "resized pod-level allocation",
+		pod:  pod,
+		allocated: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "c1", Resources: *resizedPod.Spec.Containers[0].Resources.DeepCopy()},
+					{Name: "c2", Resources: *resizedPod.Spec.Containers[1].Resources.DeepCopy()},
+				},
+				InitContainers: []v1.Container{
+					{Name: "c1-restartable-init", Resources: *resizedPod.Spec.InitContainers[0].Resources.DeepCopy()},
+					{Name: "c1-init", Resources: *resizedPod.Spec.InitContainers[1].Resources.DeepCopy()},
+				},
+				Resources: resizedPodWithPodLevelResources.Spec.Resources.DeepCopy(),
+			},
+		},
+		expectUpdate:                 true,
+		expectPod:                    resizedPodWithPodLevelResources,
+		inPlacePodLevelResizeEnabled: true,
+	}, {
+		name: "resized pod-level resources and allocation",
+		pod:  podWithPodLevelResources,
+		allocated: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "c1", Resources: *resizedPod.Spec.Containers[0].Resources.DeepCopy()},
+					{Name: "c2", Resources: *resizedPod.Spec.Containers[1].Resources.DeepCopy()},
+				},
+				InitContainers: []v1.Container{
+					{Name: "c1-restartable-init", Resources: *resizedPod.Spec.InitContainers[0].Resources.DeepCopy()},
+					{Name: "c1-init", Resources: *resizedPod.Spec.InitContainers[1].Resources.DeepCopy()},
+				},
+				Resources: resizedPodWithPodLevelResources.Spec.Resources.DeepCopy(),
+			},
+		},
+		expectUpdate:                 true,
+		expectPod:                    resizedPodWithPodLevelResources,
+		inPlacePodLevelResizeEnabled: true,
+	}, {
+		name: "resized pod-level resources and no container resources",
+		pod:  podWithoutContainerResources,
+		allocated: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "c1", Resources: *resizedPod.Spec.Containers[0].Resources.DeepCopy()},
+					{Name: "c2", Resources: *resizedPod.Spec.Containers[1].Resources.DeepCopy()},
+				},
+				InitContainers: []v1.Container{
+					{Name: "c1-restartable-init", Resources: *resizedPod.Spec.InitContainers[0].Resources.DeepCopy()},
+					{Name: "c1-init", Resources: *resizedPod.Spec.InitContainers[1].Resources.DeepCopy()},
+				},
+				Resources: resizedPodWithPodLevelResources.Spec.Resources.DeepCopy(),
+			},
+		},
+		expectUpdate:                 true,
+		expectPod:                    resizedPodWithPodLevelResources,
+		inPlacePodLevelResizeEnabled: true,
+	}, {
+		name: "pod-level resources with overhead, checkpoint matches spec (no overhead stored)",
+		pod:  podWithPodLevelResourcesAndOverhead,
+		allocated: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
+			Spec: v1.PodSpec{
+				Resources: podWithPodLevelResourcesAndOverhead.Spec.Resources.DeepCopy(),
+			},
+		},
+		expectUpdate:                 false,
+		inPlacePodLevelResizeEnabled: true,
+	}, {
+		name: "resized pod-level resources with feature gate disabled",
+		pod:  podWithPodLevelResources,
+		allocated: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{UID: pod.UID},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "c1", Resources: *pod.Spec.Containers[0].Resources.DeepCopy()},
+					{Name: "c2", Resources: *pod.Spec.Containers[1].Resources.DeepCopy()},
+				},
+				InitContainers: []v1.Container{
+					{Name: "c1-restartable-init", Resources: *pod.Spec.InitContainers[0].Resources.DeepCopy()},
+					{Name: "c1-init", Resources: *pod.Spec.InitContainers[1].Resources.DeepCopy()},
+				},
+				Resources: resizedPod.Spec.Resources.DeepCopy(),
+			},
+		},
+		expectUpdate:                 false,
+		expectPod:                    podWithPodLevelResources,
+		inPlacePodLevelResizeEnabled: false,
+	},
 		{
 			name: "resized memory-backed volume limit",
 			pod:  podWithVolumes,
@@ -3835,7 +3834,7 @@ func TestAllocationManager_Upgrade_CheckpointMigration(t *testing.T) {
 	}
 
 	// Prepare the legacy V1 checkpoint data using values from allocatedPod
-	v1Entries := map[types.UID]state.PodResourceInfoV1{
+	v1Entries := map[types.UID]state.PodResourceInfo{
 		allocatedPod.UID: {
 			ContainerResources: map[string]v1.ResourceRequirements{
 				allocatedPod.Spec.Containers[0].Name: allocatedPod.Spec.Containers[0].Resources,
@@ -3848,7 +3847,7 @@ func TestAllocationManager_Upgrade_CheckpointMigration(t *testing.T) {
 	}
 
 	// Serialize V1 entries and write as legacy V1 JSON checkpoint to disk
-	serializedV1, err := json.Marshal(state.PodResourceCheckpointInfoV1{Entries: v1Entries})
+	serializedV1, err := json.Marshal(state.PodResourceCheckpointInfo{Entries: v1Entries})
 	require.NoError(t, err)
 
 	v1JSON := fmt.Sprintf(`{"data":%q,"checksum":%d}`, string(serializedV1), checksum.New(string(serializedV1)))

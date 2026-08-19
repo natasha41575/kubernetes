@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
+	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 )
 
 func TestStateMemory_EmptyDirVolumeLimits(t *testing.T) {
@@ -91,7 +92,7 @@ func TestStateMemory_ResourceIsolation(t *testing.T) {
 			v1.ResourceCPU: resource.MustParse("250m"),
 		},
 	}
-	err := state.SetContainerResources(logger, podUID, containerName, containerResources)
+	err := state.SetContainerResources(logger, podUID, containerName, podutil.Containers, containerResources)
 	require.NoError(t, err)
 
 	// Verify container resources are set, and others are nil/empty
@@ -153,7 +154,7 @@ func TestStateMemory_ResourceIsolation(t *testing.T) {
 			v1.ResourceCPU: resource.MustParse("500m"),
 		},
 	}
-	err = state.SetContainerResources(logger, podUID, containerName, updatedContainerResources)
+	err = state.SetContainerResources(logger, podUID, containerName, podutil.Containers, updatedContainerResources)
 	require.NoError(t, err)
 
 	// Verify container resources are updated, AND both pod-level resources and volume limits are still intact
