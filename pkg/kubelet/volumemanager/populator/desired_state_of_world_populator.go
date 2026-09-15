@@ -202,7 +202,20 @@ func (dswp *desiredStateOfWorldPopulator) findAndRemoveDeletedPods(logger klog.L
 	for _, volumeToMount := range dswp.desiredStateOfWorld.GetVolumesToMount() {
 		podsFromCache[volumetypes.UniquePodName(volumeToMount.Pod.UID)] = struct{}{}
 		pod, podExists := dswp.podManager.GetPodByUID(volumeToMount.Pod.UID)
+		volumeRemovedFromPodSpec := false
 		if podExists {
+			// Check whether this volume is still present and mounted in pod.Spec.Volumes.
+			// If removed while the pod is running, allow tearing down the volume dynamically.
+			collectSELinuxOptions := utilfeature.DefaultFeatureGate.Enabled(features.SELinuxMountReadWriteOncePod)
+			mounts, devices, _ := util.GetPodVolumeNames(pod, collectSELinuxOptions)
+			stillUsed := false
+			for _, podVol := range pod.Spec.Volumes {
+				if (mounts.Has(podVol.Name) || devices.Has(podVol.Name)) && slices.Contains(volumeToMount.OuterVolumeSpecNames, podVol.Name) {
+					stillUsed = true
+					break
+				}
+			}
+			volumeRemovedFromPodSpec = !stillUsed
 
 			// check if the attachability has changed for this volume
 			if volumeToMount.PluginIsAttachable {
@@ -217,8 +230,8 @@ func (dswp *desiredStateOfWorldPopulator) findAndRemoveDeletedPods(logger klog.L
 				}
 			}
 
-			// Exclude known pods that we expect to be running
-			if !dswp.podStateProvider.ShouldPodRuntimeBeRemoved(pod.UID) {
+			// Exclude known pods that we expect to be running unless the volume was removed from the pod spec
+			if !volumeRemovedFromPodSpec && !dswp.podStateProvider.ShouldPodRuntimeBeRemoved(pod.UID) {
 				continue
 			}
 		}
@@ -226,8 +239,8 @@ func (dswp *desiredStateOfWorldPopulator) findAndRemoveDeletedPods(logger klog.L
 		// Once a pod has been deleted from kubelet pod manager, do not delete
 		// it immediately from volume manager. Instead, check the kubelet
 		// pod state provider to verify that all containers in the pod have been
-		// terminated.
-		if !dswp.podStateProvider.ShouldPodRuntimeBeRemoved(volumeToMount.Pod.UID) {
+		// terminated (unless the volume was dynamically removed from a running pod).
+		if !volumeRemovedFromPodSpec && !dswp.podStateProvider.ShouldPodRuntimeBeRemoved(volumeToMount.Pod.UID) {
 			logger.V(4).Info("Pod still has one or more containers in the non-exited state and will not be removed from desired state", "pod", klog.KObj(volumeToMount.Pod))
 			continue
 		}
@@ -236,14 +249,16 @@ func (dswp *desiredStateOfWorldPopulator) findAndRemoveDeletedPods(logger klog.L
 			volumeToMountSpecName = volumeToMount.VolumeSpec.Name()
 		}
 		removed := dswp.actualStateOfWorld.PodRemovedFromVolume(volumeToMount.PodName, volumeToMount.VolumeName)
-		if removed && podExists {
+		if removed && podExists && !volumeRemovedFromPodSpec {
 			logger.V(4).Info("Actual state does not yet have volume mount information and pod still exists in pod manager, skip removing volume from desired state", "pod", klog.KObj(volumeToMount.Pod), "podUID", volumeToMount.Pod.UID, "volumeName", volumeToMountSpecName)
 			continue
 		}
 		logger.V(4).Info("Removing volume from desired state", "pod", klog.KObj(volumeToMount.Pod), "podUID", volumeToMount.Pod.UID, "volumeName", volumeToMountSpecName)
 		dswp.desiredStateOfWorld.DeletePodFromVolume(
 			volumeToMount.PodName, volumeToMount.VolumeName)
-		dswp.deleteProcessedPod(volumeToMount.PodName)
+		if !volumeRemovedFromPodSpec {
+			dswp.deleteProcessedPod(volumeToMount.PodName)
+		}
 	}
 
 	// Cleanup orphanded entries from processedPods
@@ -280,13 +295,29 @@ func (dswp *desiredStateOfWorldPopulator) processPodVolumes(ctx context.Context,
 
 	logger := klog.FromContext(ctx)
 	uniquePodName := util.GetUniquePodName(pod)
+	collectSELinuxOptions := utilfeature.DefaultFeatureGate.Enabled(features.SELinuxMountReadWriteOncePod)
+	mounts, devices, seLinuxContainerContexts := util.GetPodVolumeNames(pod, collectSELinuxOptions)
+
 	if dswp.podPreviouslyProcessed(uniquePodName) {
-		return
+		// Check if any volume in pod.Spec.Volumes has not been added to desiredStateOfWorld yet.
+		// This allows dynamically added volumes on a running pod to be processed.
+		existingVolumes := dswp.desiredStateOfWorld.GetVolumeNamesForPod(uniquePodName)
+		hasUnprocessedVolume := false
+		for _, podVolume := range pod.Spec.Volumes {
+			if !mounts.Has(podVolume.Name) && !devices.Has(podVolume.Name) {
+				continue
+			}
+			if _, ok := existingVolumes[podVolume.Name]; !ok {
+				hasUnprocessedVolume = true
+				break
+			}
+		}
+		if !hasUnprocessedVolume {
+			return
+		}
 	}
 
 	allVolumesAdded := true
-	collectSELinuxOptions := utilfeature.DefaultFeatureGate.Enabled(features.SELinuxMountReadWriteOncePod)
-	mounts, devices, seLinuxContainerContexts := util.GetPodVolumeNames(pod, collectSELinuxOptions)
 
 	// Process volume spec for each volume defined in pod
 	for _, podVolume := range pod.Spec.Volumes {

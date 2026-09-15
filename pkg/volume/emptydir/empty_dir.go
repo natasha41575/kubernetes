@@ -297,6 +297,16 @@ func (ed *emptyDir) SetUpAt(dir string, mounterArgs volume.MounterArgs) error {
 	ownershipChanger := volume.NewVolumeOwnership(ed, dir, mounterArgs.FsGroup, nil /*fsGroupChangePolicy*/, volumeutil.FSGroupCompleteHook(ed.plugin, nil))
 	_ = ownershipChanger.ChangePermissions()
 
+	// Ensure host directory has shared mount propagation when any container mounts
+	// this volume with HostToContainer or Bidirectional propagation so dynamic submounts propagate.
+	if err == nil && ed.hasPropagatedMount() && ed.plugin != nil {
+		if kletHost, ok := ed.plugin.host.(volume.KubeletVolumeHost); ok && kletHost.GetHostUtil() != nil {
+			if shareErr := kletHost.GetHostUtil().MakeRShared(dir); shareErr != nil {
+				klog.V(4).Infof("Failed to make emptyDir %s rshared: %v", dir, shareErr)
+			}
+		}
+	}
+
 	// If setting up the quota fails, just log a message but don't actually error out.
 	// We'll use the old du mechanism in this case, at least until we support
 	// enforcement.
@@ -305,6 +315,21 @@ func (ed *emptyDir) SetUpAt(dir string, mounterArgs volume.MounterArgs) error {
 		err = ed.assignQuota(dir, mounterArgs.DesiredSize)
 	}
 	return err
+}
+
+func (ed *emptyDir) hasPropagatedMount() bool {
+	if ed.pod == nil {
+		return false
+	}
+	for _, c := range append(ed.pod.Spec.Containers, ed.pod.Spec.InitContainers...) {
+		for _, vm := range c.VolumeMounts {
+			if vm.Name == ed.volName && vm.MountPropagation != nil &&
+				(*vm.MountPropagation == v1.MountPropagationHostToContainer || *vm.MountPropagation == v1.MountPropagationBidirectional) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // assignQuota checks if the underlying medium supports quotas and if so, sets
@@ -562,6 +587,11 @@ func (ed *emptyDir) teardownDefault(dir string) error {
 		err := fsquota.ClearQuota(ed.mounter, dir, userNamespacesEnabled)
 		if err != nil {
 			klog.Warningf("Failed to clear quota on %s: %v", dir, err)
+		}
+	}
+	if ed.hasPropagatedMount() && ed.mounter != nil {
+		if notMnt, err := ed.mounter.IsLikelyNotMountPoint(dir); err == nil && !notMnt {
+			_ = ed.mounter.Unmount(dir)
 		}
 	}
 	// Renaming the directory is not required anymore because the operation executor

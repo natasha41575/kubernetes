@@ -107,10 +107,20 @@ func (g *graphPopulator) updatePod(oldObj, obj interface{}) {
 		return
 	}
 	if oldPod, ok := oldObj.(*corev1.Pod); ok && oldPod != nil {
-		// Ephemeral containers can add new secret or config map references to the pod.
+		// Ephemeral containers or dynamic volumes can add new secret or config map references to the pod.
 		hasNewEphemeralContainers := len(pod.Spec.EphemeralContainers) > len(oldPod.Spec.EphemeralContainers)
+		hasVolumeChanges := len(pod.Spec.Volumes) != len(oldPod.Spec.Volumes)
+		if !hasVolumeChanges {
+			for i := range pod.Spec.Volumes {
+				if pod.Spec.Volumes[i].Name != oldPod.Spec.Volumes[i].Name {
+					hasVolumeChanges = true
+					break
+				}
+			}
+		}
 		if (pod.Spec.NodeName == oldPod.Spec.NodeName) && (pod.UID == oldPod.UID) &&
 			!hasNewEphemeralContainers &&
+			!hasVolumeChanges &&
 			resourceclaim.PodStatusEqual(oldPod.Status.ResourceClaimStatuses, pod.Status.ResourceClaimStatuses) &&
 			resourceclaim.PodExtendedStatusEqual(oldPod.Status.ExtendedResourceClaimStatus, pod.Status.ExtendedResourceClaimStatus) {
 			// Node and uid are unchanged, all object references in the pod spec are immutable respectively unmodified (claim statuses).

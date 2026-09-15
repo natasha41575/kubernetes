@@ -5852,6 +5852,8 @@ var updatablePodSpecFields = []string{
 	"`spec.activeDeadlineSeconds`",
 	"`spec.tolerations` (only additions to existing tolerations)",
 	"`spec.terminationGracePeriodSeconds` (allow it to be set to 1 if it was previously negative)",
+	"`spec.volumes`",
+	"`spec.containers[*].volumeMounts`",
 }
 
 // ValidatePodUpdate tests to see if the update is legal for an end user to make. newPod is updated with fields
@@ -5869,6 +5871,8 @@ func ValidatePodUpdate(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 	// 3.  spec.activeDeadlineSeconds
 	// 4.  spec.terminationGracePeriodSeconds
 	// 5.  spec.schedulingGates
+	// 6.  spec.volumes (Dynamic Volumes PoC)
+	// 7.  spec.containers[*].volumeMounts (Dynamic Volumes PoC)
 
 	containerErrs, stop := ValidateContainerUpdates(newPod.Spec.Containers, oldPod.Spec.Containers, specPath.Child("containers"))
 	allErrs = append(allErrs, containerErrs...)
@@ -5915,17 +5919,21 @@ func ValidatePodUpdate(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 
 	// handle updateable fields by munging those fields prior to deep equal comparison.
 	mungedPodSpec := *newPod.Spec.DeepCopy()
-	// munge spec.containers[*].image
+	// munge spec.volumes for dynamic volume attachment/detachment
+	mungedPodSpec.Volumes = oldPod.Spec.Volumes // +k8s:verify-mutation:reason=clone
+	// munge spec.containers[*].image and spec.containers[*].volumeMounts
 	var newContainers []core.Container
 	for ix, container := range mungedPodSpec.Containers {
-		container.Image = oldPod.Spec.Containers[ix].Image // +k8s:verify-mutation:reason=clone
+		container.Image = oldPod.Spec.Containers[ix].Image               // +k8s:verify-mutation:reason=clone
+		container.VolumeMounts = oldPod.Spec.Containers[ix].VolumeMounts // +k8s:verify-mutation:reason=clone
 		newContainers = append(newContainers, container)
 	}
 	mungedPodSpec.Containers = newContainers
-	// munge spec.initContainers[*].image
+	// munge spec.initContainers[*].image and spec.initContainers[*].volumeMounts
 	var newInitContainers []core.Container
 	for ix, container := range mungedPodSpec.InitContainers {
-		container.Image = oldPod.Spec.InitContainers[ix].Image // +k8s:verify-mutation:reason=clone
+		container.Image = oldPod.Spec.InitContainers[ix].Image               // +k8s:verify-mutation:reason=clone
+		container.VolumeMounts = oldPod.Spec.InitContainers[ix].VolumeMounts // +k8s:verify-mutation:reason=clone
 		newInitContainers = append(newInitContainers, container)
 	}
 	mungedPodSpec.InitContainers = newInitContainers
