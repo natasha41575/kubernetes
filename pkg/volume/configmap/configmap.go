@@ -18,9 +18,6 @@ package configmap
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"k8s.io/klog/v2"
 	"k8s.io/mount-utils"
@@ -260,97 +257,12 @@ func (b *configMapVolumeMounter) SetUpAt(dir string, mounterArgs volume.MounterA
 		return err
 	}
 
-	b.syncDynamicPropagationMounts(dir)
+	if b.plugin != nil {
+		volumeutil.SyncDynamicPropagationMounts(b.mounter, b.plugin.host, &b.pod, b.volName, dir)
+	}
 
 	setupSuccess = true
 	return nil
-}
-
-func dynamicMountsTrackingFile(dir, volName string) string {
-	return filepath.Join(filepath.Dir(dir), "."+volName+".dynamic_mounts")
-}
-
-// syncDynamicPropagationMounts bind-mounts this configmap volume into any parent host directory
-// mounted with HostToContainer or Bidirectional propagation when a container mounts this volume
-// as a subpath of that parent volume mount. This enables live hot-plug into running containers.
-func (b *configMapVolumeMounter) syncDynamicPropagationMounts(dir string) {
-	if b.mounter == nil || b.plugin == nil || b.plugin.host == nil {
-		return
-	}
-
-	volumesRootDir := filepath.Dir(filepath.Dir(dir))
-	var trackedPaths []string
-
-	for _, c := range append(b.pod.Spec.Containers, b.pod.Spec.InitContainers...) {
-		var targetMounts []v1.VolumeMount
-		var parentMounts []v1.VolumeMount
-
-		for _, vm := range c.VolumeMounts {
-			if vm.Name == b.volName {
-				targetMounts = append(targetMounts, vm)
-			} else if vm.MountPropagation != nil &&
-				(*vm.MountPropagation == v1.MountPropagationHostToContainer || *vm.MountPropagation == v1.MountPropagationBidirectional) {
-				parentMounts = append(parentMounts, vm)
-			}
-		}
-
-		for _, targetMount := range targetMounts {
-			for _, parentMount := range parentMounts {
-				rel, err := filepath.Rel(parentMount.MountPath, targetMount.MountPath)
-				if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
-					continue
-				}
-
-				parentHostDir := findParentHostVolumeDir(volumesRootDir, parentMount.Name)
-				if parentHostDir == "" {
-					klog.Warningf("Could not find host directory for parent volume %s (pod %s)", parentMount.Name, b.pod.UID)
-					continue
-				}
-
-				if kletHost, ok := b.plugin.host.(volume.KubeletVolumeHost); ok && kletHost.GetHostUtil() != nil {
-					_ = kletHost.GetHostUtil().MakeRShared(parentHostDir)
-				}
-
-				targetHostPath := filepath.Join(parentHostDir, rel)
-				if err := os.MkdirAll(targetHostPath, 0755); err != nil {
-					klog.Errorf("Failed to create target host directory %s for dynamic volume %s: %v", targetHostPath, b.volName, err)
-					continue
-				}
-
-				notMnt, err := b.mounter.IsLikelyNotMountPoint(targetHostPath)
-				if err == nil && notMnt {
-					if mountErr := b.mounter.Mount(dir, targetHostPath, "", []string{"bind"}); mountErr != nil {
-						klog.Errorf("Failed to bind-mount dynamic volume %s from %s to %s: %v", b.volName, dir, targetHostPath, mountErr)
-						continue
-					}
-					klog.Infof("Dynamically hot-plugged volume %s from %s into %s (container path %s)", b.volName, dir, targetHostPath, targetMount.MountPath)
-				}
-				trackedPaths = append(trackedPaths, targetHostPath)
-			}
-		}
-	}
-
-	if len(trackedPaths) > 0 {
-		trackingFile := dynamicMountsTrackingFile(dir, b.volName)
-		_ = os.WriteFile(trackingFile, []byte(strings.Join(trackedPaths, "\n")+"\n"), 0600)
-	}
-}
-
-func findParentHostVolumeDir(volumesRootDir, parentVolName string) string {
-	entries, err := os.ReadDir(volumesRootDir)
-	if err != nil {
-		return ""
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		candidate := filepath.Join(volumesRootDir, entry.Name(), parentVolName)
-		if info, statErr := os.Stat(candidate); statErr == nil && info.IsDir() {
-			return candidate
-		}
-	}
-	return ""
 }
 
 // MakePayload function is exported so that it can be called from the projection volume driver
@@ -430,32 +342,8 @@ func (c *configMapVolumeUnmounter) TearDown() error {
 }
 
 func (c *configMapVolumeUnmounter) TearDownAt(dir string) error {
-	c.cleanupDynamicPropagationMounts(dir)
+	volumeutil.CleanupDynamicPropagationMounts(c.mounter, c.volName, dir)
 	return volumeutil.UnmountViaEmptyDir(dir, c.plugin.host, c.volName, wrappedVolumeSpec(), c.podUID)
-}
-
-func (c *configMapVolumeUnmounter) cleanupDynamicPropagationMounts(dir string) {
-	if c.mounter == nil {
-		return
-	}
-	trackingFile := dynamicMountsTrackingFile(dir, c.volName)
-	data, err := os.ReadFile(trackingFile)
-	if err != nil {
-		return
-	}
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		targetHostPath := strings.TrimSpace(line)
-		if targetHostPath == "" {
-			continue
-		}
-		if err := mount.CleanupMountPoint(targetHostPath, c.mounter, true); err != nil {
-			klog.Warningf("Failed to cleanup dynamic propagation mount %s for volume %s: %v", targetHostPath, c.volName, err)
-		} else {
-			klog.Infof("Dynamically hot-unplugged propagated mount %s for volume %s", targetHostPath, c.volName)
-		}
-	}
-	_ = os.Remove(trackingFile)
 }
 
 func getVolumeSource(spec *volume.Spec) (*v1.ConfigMapVolumeSource, bool) {

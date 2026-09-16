@@ -307,6 +307,12 @@ func (ed *emptyDir) SetUpAt(dir string, mounterArgs volume.MounterArgs) error {
 		}
 	}
 
+	// If this volume is dynamically mounted inside a parent volume that has HostToContainer propagation,
+	// bind-mount this volume directory into the parent directory so changes propagate into the running container.
+	if err == nil && ed.plugin != nil {
+		volumeutil.SyncDynamicPropagationMounts(ed.mounter, ed.plugin.host, ed.pod, ed.volName, dir)
+	}
+
 	// If setting up the quota fails, just log a message but don't actually error out.
 	// We'll use the old du mechanism in this case, at least until we support
 	// enforcement.
@@ -552,6 +558,8 @@ func (ed *emptyDir) TearDownAt(dir string) error {
 		return fmt.Errorf("failed to remove ready dir [%s]: %v", readyDir, removeErr)
 	}
 
+	volumeutil.CleanupDynamicPropagationMounts(ed.mounter, ed.volName, dir)
+
 	if pathExists, pathErr := mount.PathExists(dir); pathErr != nil {
 		return fmt.Errorf("error checking if path exists: %w", pathErr)
 	} else if !pathExists {
@@ -582,7 +590,7 @@ func (ed *emptyDir) teardownDefault(dir string) error {
 		// Remove any quota
 		userNamespacesEnabled := false
 		if usernamespacefeature.EnabledUserNamespacesSupport() {
-			userNamespacesEnabled = ed.pod.Spec.HostUsers != nil && !*ed.pod.Spec.HostUsers
+			userNamespacesEnabled = ed.pod != nil && ed.pod.Spec.HostUsers != nil && !*ed.pod.Spec.HostUsers
 		}
 		err := fsquota.ClearQuota(ed.mounter, dir, userNamespacesEnabled)
 		if err != nil {
