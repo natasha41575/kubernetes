@@ -376,7 +376,7 @@ func NewKubeGenericRuntimeManager(
 		versionCacheTTL,
 	)
 
-	kubeRuntimeManager.actuatedState, err = state.NewStateCheckpoint(logger, rootDirectory, actuatedPodsStateFile, keepOnlyResourceValues)
+	kubeRuntimeManager.actuatedState, err = state.NewStateCheckpoint(logger, rootDirectory, actuatedPodsStateFile, kubeRuntimeManager.keepOnlyResourceValues)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize actuated state checkpoint: %w", err)
 	}
@@ -856,7 +856,7 @@ func (m *kubeGenericRuntimeManager) InitializeActuatedPod(logger klog.Logger, al
 
 // keepOnlyResourceValues strips everything from pod.Spec except the resizable resources, because
 // those are all the actuated state holds.
-func keepOnlyResourceValues(pod *v1.Pod) {
+func (m *kubeGenericRuntimeManager) keepOnlyResourceValues(pod *v1.Pod) {
 	var spec v1.PodSpec
 	if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodLevelResourcesVerticalScaling) {
 		spec.Resources = pod.Spec.Resources
@@ -877,9 +877,10 @@ func keepOnlyResourceValues(pod *v1.Pod) {
 			if !allocation.VolHasMemoryBackedEmptyDir(&vol) {
 				continue
 			}
+			effectiveLimit, _ := m.runtimeHelper.EffectiveEphemeralVolumeLimit(pod, vol.Name)
 			spec.Volumes = append(spec.Volumes, v1.Volume{
 				Name:         vol.Name,
-				VolumeSource: v1.VolumeSource{EmptyDir: &v1.EmptyDirVolumeSource{Medium: vol.EmptyDir.Medium, SizeLimit: vol.EmptyDir.SizeLimit}},
+				VolumeSource: v1.VolumeSource{EmptyDir: &v1.EmptyDirVolumeSource{Medium: vol.EmptyDir.Medium, SizeLimit: effectiveLimit}},
 			})
 		}
 	}
@@ -895,9 +896,9 @@ func (m *kubeGenericRuntimeManager) computeVolumeResizeAction(ctx context.Contex
 				continue
 			}
 			actuatedSize, found := m.actuatedState.GetEmptyDirVolumeLimit(pod.UID, vol.Name)
-			desiredSize := vol.EmptyDir.SizeLimit
+			desiredSize, err := m.runtimeHelper.EffectiveEphemeralVolumeLimit(pod, vol.Name)
 
-			if !found {
+			if !found || actuatedSize == nil {
 				logger.V(2).Info("Failed to read actuated empty dir volume limit", "pod", klog.KObj(pod), "volume", vol.Name)
 				// If the actuation checkpoint is missing, force a sync to apply
 				// the limit and write the checkpoint. We treat it as an upsize
@@ -906,25 +907,18 @@ func (m *kubeGenericRuntimeManager) computeVolumeResizeAction(ctx context.Contex
 				continue
 			}
 
-			hasDesiredLimit := desiredSize != nil && !desiredSize.IsZero()
-			hasActuatedLimit := actuatedSize != nil && !actuatedSize.IsZero()
+			if err != nil || desiredSize == nil {
+				// This should never happen because EffectiveEphemeralVolumeLimit defaults
+				// to node allocatable memory when no pod or volume limit is specified.
+				logger.Error(err, "Failed to calculate desired empty dir volume limit", "pod", klog.KObj(pod), "volume", vol.Name)
+				continue
+			}
 
-			switch {
-			case !hasDesiredLimit && !hasActuatedLimit:
-				// Both are uncapped (nil or 0). No resize needed.
-			case !hasDesiredLimit:
-				// Removing sizeLimit: volume is uncapped (expands to node allocatable / pod limit). Upsize.
+			cmp := desiredSize.Cmp(*actuatedSize)
+			if cmp > 0 {
 				changes.VolumesToUpsize = append(changes.VolumesToUpsize, vol)
-			case !hasActuatedLimit:
-				// Adding sizeLimit: volume was uncapped and is now constrained. Downsize.
+			} else if cmp < 0 {
 				changes.VolumesToDownsize = append(changes.VolumesToDownsize, vol)
-			default:
-				cmp := desiredSize.Cmp(*actuatedSize)
-				if cmp > 0 {
-					changes.VolumesToUpsize = append(changes.VolumesToUpsize, vol)
-				} else if cmp < 0 {
-					changes.VolumesToDownsize = append(changes.VolumesToDownsize, vol)
-				}
 			}
 		}
 	}
@@ -1087,7 +1081,15 @@ func (m *kubeGenericRuntimeManager) doPodResizeAction(ctx context.Context, pod *
 				if err := m.runtimeHelper.ResizeEphemeralVolume(pod, vol.Name); err != nil {
 					return fmt.Errorf("failed to resize volume %s: %w", vol.Name, err)
 				}
-				if err := m.actuatedState.SetEmptyDirVolumeLimit(logger, pod.UID, vol.Name, vol.EmptyDir); err != nil {
+				effectiveLimit, err := m.runtimeHelper.EffectiveEphemeralVolumeLimit(pod, vol.Name)
+				if err != nil {
+					return fmt.Errorf("failed to calculate effective emptyDir volume limit for %s: %w", vol.Name, err)
+				}
+				actuatedEmptyDir := &v1.EmptyDirVolumeSource{
+					Medium:    vol.EmptyDir.Medium,
+					SizeLimit: effectiveLimit,
+				}
+				if err := m.actuatedState.SetEmptyDirVolumeLimit(logger, pod.UID, vol.Name, actuatedEmptyDir); err != nil {
 					return fmt.Errorf("failed to update actuated emptyDir volume limit checkpoint for %s: %w", vol.Name, err)
 				}
 			}
@@ -2431,7 +2433,7 @@ func (m *kubeGenericRuntimeManager) isMemoryBackedVolumeResizeInProgress(allocat
 				continue
 			}
 
-			allocatedLimit := volume.EmptyDir.SizeLimit
+			allocatedLimit, _ := m.runtimeHelper.EffectiveEphemeralVolumeLimit(allocatedPod, volume.Name)
 			actuatedLimit, found := m.actuatedState.GetEmptyDirVolumeLimit(allocatedPod.UID, volume.Name)
 			if !found {
 				// No actuation checkpoint yet.

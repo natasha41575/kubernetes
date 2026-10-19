@@ -18,6 +18,7 @@ package kuberuntime
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -36,11 +37,14 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/allocation/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
+	containertest "k8s.io/kubernetes/pkg/kubelet/container/testing"
 	"k8s.io/kubernetes/pkg/kubelet/images"
 	imagepullmanager "k8s.io/kubernetes/pkg/kubelet/images/pullmanager"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/logs"
 	proberesults "k8s.io/kubernetes/pkg/kubelet/prober/results"
+	"k8s.io/kubernetes/pkg/volume"
+	"k8s.io/kubernetes/pkg/volume/emptydir"
 	"k8s.io/utils/ptr"
 )
 
@@ -115,8 +119,8 @@ func newFakeKubeRuntimeManager(ctx context.Context, runtimeService internalapi.R
 		logReduction:       logreduction.NewLogReduction(identicalErrorDelay),
 		logManager:         logs.NewStubContainerLogManager(),
 		podLogsDirectory:   fakePodLogsDirectory,
-		actuatedState:      state.NewStateMemory(logger, nil, keepOnlyResourceValues),
 	}
+	kubeRuntimeManager.actuatedState = state.NewStateMemory(logger, nil, kubeRuntimeManager.keepOnlyResourceValues)
 
 	// Initialize swap controller availability check (always false for tests)
 	kubeRuntimeManager.getSwapControllerAvailable = func() bool { return false }
@@ -155,5 +159,32 @@ func newFakeKubeRuntimeManager(ctx context.Context, runtimeService internalapi.R
 		}
 	}
 
+	if fakeHelper, ok := runtimeHelper.(*containertest.FakeRuntimeHelper); ok && fakeHelper.EffectiveEphemeralVolumeLimitFunc == nil {
+		fakeHelper.EffectiveEphemeralVolumeLimitFunc = fakeEffectiveEphemeralVolumeLimit
+	}
+
 	return kubeRuntimeManager, nil
+}
+
+type fakeEmptyDirVolumeHost struct {
+	volume.VolumeHost
+}
+
+func (f *fakeEmptyDirVolumeHost) GetNodeAllocatable() (v1.ResourceList, error) {
+	return v1.ResourceList{
+		v1.ResourceMemory: resource.MustParse(fakeNodeAllocatableMemory),
+		v1.ResourceCPU:    resource.MustParse(fakeNodeAllocatableCPU),
+	}, nil
+}
+
+func fakeEffectiveEphemeralVolumeLimit(pod *v1.Pod, volumeName string) (*resource.Quantity, error) {
+	for i := range pod.Spec.Volumes {
+		vol := &pod.Spec.Volumes[i]
+		if vol.Name == volumeName {
+			plug := emptydir.ProbeVolumePlugins()[0]
+			_ = plug.Init(&fakeEmptyDirVolumeHost{})
+			return plug.(volume.ResizableEphemeralVolumePlugin).EffectiveEphemeralVolumeLimit(volume.NewSpecFromVolume(vol), pod)
+		}
+	}
+	return nil, fmt.Errorf("volume %s not found in pod %s", volumeName, pod.Name)
 }
