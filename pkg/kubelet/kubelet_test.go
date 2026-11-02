@@ -2853,7 +2853,6 @@ func TestHandlePodAdditionsTracksCertificatesOnlyForAdmittedPods(t *testing.T) {
 func TestPodResourceAllocationReset(t *testing.T) {
 	logger, tCtx := ktesting.NewTestContext(t)
 
-	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
 	testKubelet := newTestKubelet(t, false)
 	defer testKubelet.Cleanup()
 	kubelet := testKubelet.kubelet
@@ -5213,7 +5212,6 @@ func TestHandlePodUpdates_VolumeResize(t *testing.T) {
 		t.Skip("InPlacePodVerticalScaling is not currently supported for Windows")
 	}
 
-	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
 	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingMemoryBackedVolumes, true)
 	tCtx := ktesting.Init(t)
 
@@ -5454,7 +5452,6 @@ func TestHandlePodReconcile_RetryPendingResizes(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("InPlacePodVerticalScaling is not currently supported for Windows")
 	}
-	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
 	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRANodeAllocatableResources, true)
 	logger, tCtx := ktesting.NewTestContext(t)
 
@@ -5998,7 +5995,6 @@ func TestHandlePodUpdates_ResizeTerminatingPods(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("InPlacePodVerticalScaling is not currently supported for Windows")
 	}
-	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
 	metrics.Register()
 
 	const podUID types.UID = "pod-1"

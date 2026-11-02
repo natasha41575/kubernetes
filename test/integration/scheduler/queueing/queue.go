@@ -2573,7 +2573,6 @@ var CoreResourceEnqueueTestCases = []*CoreResourceEnqueueTestCase{
 // moved properly upon their registered events.
 func RunTestCoreResourceEnqueue(t *testing.T, tt *CoreResourceEnqueueTestCase) { //nolint:forbidigo // calls ndftesting.NewMockFeature/ktesting.NewTestContext, which require *testing.T
 	t.Helper()
-	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
 	if tt.EnableDRAExtendedResource {
 		featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRAExtendedResource, true)
 	}

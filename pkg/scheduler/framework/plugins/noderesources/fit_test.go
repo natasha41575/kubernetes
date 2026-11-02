@@ -1422,14 +1422,12 @@ func BenchmarkTestFitScore(b *testing.B) {
 
 func TestEventsToRegister(t *testing.T) {
 	tests := []struct {
-		name                            string
-		enableInPlacePodVerticalScaling bool
-		enableDRAExtendedResource       bool
-		expectedClusterEvents           []fwk.ClusterEventWithHint
+		name                      string
+		enableDRAExtendedResource bool
+		expectedClusterEvents     []fwk.ClusterEventWithHint
 	}{
 		{
-			name:                            "Register events with InPlacePodVerticalScaling feature enabled",
-			enableInPlacePodVerticalScaling: true,
+			name: "Register events with default features",
 			expectedClusterEvents: []fwk.ClusterEventWithHint{
 				{Event: fwk.ClusterEvent{Resource: fwk.AssignedPod, ActionType: fwk.Delete}},
 				{Event: fwk.ClusterEvent{Resource: fwk.Node, ActionType: fwk.Add | fwk.UpdateNodeAllocatable}},
@@ -1438,18 +1436,13 @@ func TestEventsToRegister(t *testing.T) {
 			},
 		},
 		{
-			name: "Register events with default features",
-			expectedClusterEvents: []fwk.ClusterEventWithHint{
-				{Event: fwk.ClusterEvent{Resource: fwk.AssignedPod, ActionType: fwk.Delete}},
-				{Event: fwk.ClusterEvent{Resource: fwk.Node, ActionType: fwk.Add | fwk.UpdateNodeAllocatable}},
-			},
-		},
-		{
 			name:                      "Register events with DRAExtendedResource feature enabled",
 			enableDRAExtendedResource: true,
 			expectedClusterEvents: []fwk.ClusterEventWithHint{
 				{Event: fwk.ClusterEvent{Resource: fwk.AssignedPod, ActionType: fwk.Delete}},
 				{Event: fwk.ClusterEvent{Resource: fwk.Node, ActionType: fwk.Add | fwk.UpdateNodeAllocatable}},
+				{Event: fwk.ClusterEvent{Resource: fwk.AssignedPod, ActionType: fwk.UpdatePodScaleDown}},
+				{Event: fwk.ClusterEvent{Resource: fwk.TargetPod, ActionType: fwk.UpdatePodScaleDown}},
 				{Event: fwk.ClusterEvent{Resource: fwk.DeviceClass, ActionType: fwk.Add | fwk.Update}},
 			},
 		},
@@ -1457,7 +1450,7 @@ func TestEventsToRegister(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fp := &Fit{enableInPlacePodVerticalScaling: test.enableInPlacePodVerticalScaling, enableDRAExtendedResource: test.enableDRAExtendedResource}
+			fp := &Fit{enableDRAExtendedResource: test.enableDRAExtendedResource}
 			_, ctx := ktesting.NewTestContext(t)
 			actualClusterEvents, err := fp.EventsToRegister(ctx)
 			if err != nil {
@@ -1557,9 +1550,7 @@ func Test_isSchedulableAfterTargetPodScaleDown(t *testing.T) {
 	for name, tc := range testcases {
 		t.Run(name, func(t *testing.T) {
 			logger, ctx := ktesting.NewTestContext(t)
-			p, err := NewFit(ctx, &config.NodeResourcesFitArgs{ScoringStrategy: defaultScoringStrategy}, nil, plfeature.Features{
-				EnableInPlacePodVerticalScaling: true,
-			})
+			p, err := NewFit(ctx, &config.NodeResourcesFitArgs{ScoringStrategy: defaultScoringStrategy}, nil, plfeature.Features{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1641,7 +1632,6 @@ func Test_isSchedulableAfterAssignedPodScaleDown(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			logger, ctx := ktesting.NewTestContext(t)
 			p, err := NewFit(ctx, &config.NodeResourcesFitArgs{ScoringStrategy: defaultScoringStrategy}, nil, plfeature.Features{
-				EnableInPlacePodVerticalScaling:                    true,
 				EnableInPlacePodVerticalScalingSchedulerPreemption: true,
 			})
 			if err != nil {
