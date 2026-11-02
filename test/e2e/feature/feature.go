@@ -203,10 +203,6 @@ var (
 	// ImageVolume is used for testing the image volume source feature (https://kep.k8s.io/4639).
 	ImageVolume = framework.WithFeature(framework.ValidFeatures.Add("ImageVolume"))
 
-	// Owner: sig-node
-	// InPlacePodVerticalScaling is used for testing in-place pod vertical scaling (https://kep.k8s.io/1287).
-	InPlacePodVerticalScaling = framework.WithFeature(framework.ValidFeatures.Add("InPlacePodVerticalScaling"))
-
 	// Owner: sig-storage
 	// Marks tests that only work with a sigs.k8s.io/kind cluster
 	Kind = framework.WithFeature(framework.ValidFeatures.Add("Kind"))
