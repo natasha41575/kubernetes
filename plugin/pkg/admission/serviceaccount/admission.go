@@ -207,8 +207,13 @@ func (s *Plugin) Validate(ctx context.Context, a admission.Attributes, o admissi
 		if !ok {
 			return admission.NewForbidden(a, fmt.Errorf("expected an old pod but got a %T", a.GetOldObject()))
 		}
-		// Only added containers can reference new secrets.
+		// Only added containers or added volumes can reference new secrets.
 		for pair := range podutil.ContainerPairs(pod, oldPod, podutil.Containers) {
+			if pair.Old == nil {
+				return s.limitUpdateSecretReferences(pod, a)
+			}
+		}
+		for pair := range podutil.VolumePairs(pod, oldPod) {
 			if pair.Old == nil {
 				return s.limitUpdateSecretReferences(pod, a)
 			}
@@ -379,7 +384,10 @@ func (s *Plugin) limitUpdateSecretReferences(pod *api.Pod, a admission.Attribute
 	}
 	// Ensure all secrets newly referenced by the update are allowed by the service account
 	oldPod, _ := a.GetOldObject().(*api.Pod)
-	return checkMountableSecrets(serviceAccount, pod, oldPod)
+	if err := checkMountableSecrets(serviceAccount, pod, oldPod); err != nil {
+		return admission.NewForbidden(a, err)
+	}
+	return nil
 }
 
 // checkMountableSecrets returns an error listing the secrets referenced by pod that are not in
@@ -417,8 +425,7 @@ func checkMountableSecrets(serviceAccount *corev1.ServiceAccount, pod, oldPod *a
 
 // admitDynamicUpdate mounts the pod's existing service account token volume into containers
 // added through the dynamic subresource, as mountServiceAccountToken would have at creation. The
-// automount decision was made at creation, so the token volume is never added here: added
-// containers can only reference volumes the pod already has.
+// automount decision was made at creation, so the token volume is never added here.
 func (s *Plugin) admitDynamicUpdate(a admission.Attributes) {
 	if !s.MountServiceAccountToken {
 		return
@@ -429,13 +436,23 @@ func (s *Plugin) admitDynamicUpdate(a admission.Attributes) {
 		return
 	}
 	tokenVolumeName := ""
-	for _, volume := range pod.Spec.Volumes {
+	for _, volume := range oldPod.Spec.Volumes {
 		if strings.HasPrefix(volume.Name, ServiceAccountVolumeName+"-") {
 			tokenVolumeName = volume.Name
 			break
 		}
 	}
 	if tokenVolumeName == "" {
+		return
+	}
+	stillPresent := false
+	for _, volume := range pod.Spec.Volumes {
+		if volume.Name == tokenVolumeName {
+			stillPresent = true
+			break
+		}
+	}
+	if !stillPresent {
 		return
 	}
 	for pair := range podutil.ContainerPairs(pod, oldPod, podutil.Containers) {
